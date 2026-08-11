@@ -19,9 +19,9 @@ AllSimplePaths::AllSimplePaths(const Graph &G, node source, node target, count c
         throw std::runtime_error(
             "Error, AllSimplePaths class has been implemented for directed graphs only.");
 
-    if (G.isWeighted())
-        throw std::runtime_error(
-            "Error, AllSimplePaths class has been implemented for unweighted graphs only.");
+//    if (G.isWeighted())
+//        throw std::runtime_error(
+//            "Error, AllSimplePaths class has been implemented for unweighted graphs only.");
 
     if (!G.hasNode(source))
         throw std::runtime_error("Error, source node not in graph.");
