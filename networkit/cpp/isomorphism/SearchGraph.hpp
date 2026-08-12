@@ -112,6 +112,18 @@ private:
      *  3. Sort each slice ascending. hasEdge() and the neighbourhood intersections rely on this.
      *  4. Repeat for the in-edges if the graph is directed; skip it otherwise, since inBegin()
      *     and friends fall back to the out-arrays.
+     *
+     * Reuse: NetworKit has no CSR graph class to inherit from, so this has to be written, but the
+     * count/prefix-sum/scatter shape is established in the repo. ParallelPartitionCoarsening.cpp
+     * has the tidiest version, where one std::partial_sum over an offset array biased by two
+     * serves as both the offsets and the fill cursor. MaximalCliques.cpp keeps its own CSR under
+     * the same firstOut/head names used here and is worth a look for how it is consumed.
+     *
+     * Two things that look like shortcuts and are not: Graph::sortEdges() would sort the input in
+     * place, but it mutates the caller's graph and temporarily doubles its memory, so step 3 has
+     * to sort this snapshot's own slices. And CSRGeneralMatrix::adjacencyMatrix() really is a
+     * sorted CSR, but it stores a double per entry with algebraic semantics, which is far more
+     * machinery than a boolean neighbour list needs.
      */
     void buildCSR(const Graph &G);
 
@@ -123,6 +135,10 @@ private:
      *     `matrix` to z * matrixStride words, zero-initialized.
      *  2. For every edge u -> v set bit v of row u; for an undirected graph set both directions
      *     so that hasEdge() does not have to normalize its arguments.
+     *
+     * Reuse: `tlx::div_ceil(z, 64)` from tlx/math/div_ceil.hpp expresses the stride with the
+     * intent visible. Beyond that there is nothing to reuse - NetworKit has no bitset abstraction
+     * and does not use std::bitset anywhere, so the masking is written by hand as above.
      */
     void buildAdjacencyMatrix(const Graph &G);
 

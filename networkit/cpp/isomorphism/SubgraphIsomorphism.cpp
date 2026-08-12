@@ -4,6 +4,43 @@
 
 #include <networkit/isomorphism/SubgraphIsomorphism.hpp>
 
+/*
+ * ## What this module reuses from the rest of NetworKit
+ *
+ * Nothing in NetworKit does subgraph matching, so the search algorithms themselves are written
+ * from scratch. The pieces around them are not. Before filling in any of the TODOs in this module,
+ * check this list - each entry either drops in unchanged or saves writing a known-fiddly helper.
+ *
+ * Used as-is, no adaptation:
+ *
+ * - `Aux::SignalHandler` (networkit/auxiliary/SignalHandling.hpp) is what every checkSignal() stub
+ *   in this module should be. Hold one as a member and call assureRunning() on it; there is no
+ *   need to write any interruption machinery. Construction is cheap and nesting is a no-op, which
+ *   is why MaximalCliques declares one in run() and another inside its recursive tomita().
+ * - `Aux::Random::getURNG()` (networkit/auxiliary/Random.hpp) is already thread-local, so it is
+ *   safe inside a parallel region without any seeding work. ParallelRI can use it for victim
+ *   selection instead of carrying a per-worker seed.
+ * - `Aux::SparseVector<T>` (networkit/auxiliary/SparseVector.hpp) clears only the entries that
+ *   were actually touched, not the whole array. That is the right structure for scratch marks that
+ *   get dirtied and then wiped in bulk, such as RI-DS domain bookkeeping. It is *not* the right
+ *   structure for core1/core2, which are undone one entry at a time on backtrack and are already
+ *   O(1) as plain vectors.
+ * - `CoreDecomposition::getNodeOrder()` (networkit/centrality/CoreDecomposition.hpp) hands back a
+ *   degeneracy ordering in three lines. Optional input to the target-side tie-break in
+ *   RIImpl::computeOrdering; it does not replace the pattern ordering, which is the algorithm.
+ * - `tlx::div_ceil` (tlx/math/div_ceil.hpp) says what (z + 63) / 64 means in SearchGraph.
+ *
+ * Same shape exists, but the code has to be written here:
+ *
+ * - There is no CSR graph class anywhere in NetworKit, so SearchGraph::buildCSR has to be written.
+ *   The count/prefix-sum/scatter idiom to follow is in ParallelPartitionCoarsening.cpp, and
+ *   MaximalCliques.cpp keeps its own CSR under the same firstOut/head names this module uses.
+ * - Candidate sets: MaximalCliques.cpp partitions one buffer with pxvector/pxlookup and
+ *   swapNodeToPos(), which keeps a backtracking search free of allocation. Worth copying the
+ *   technique for the terminal sets in VF2 and the domains in RI-DS.
+ *
+ */
+
 namespace NetworKit {
 
 namespace {

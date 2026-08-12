@@ -35,6 +35,8 @@ void SearchGraph::buildCSR(const Graph &G) {
     //  4. Repeat steps 1-3 for the in-edges into inFirst/inHead, but only when `directed`. For an
     //     undirected graph inBegin()/inEnd() fall back to the out-arrays, so building a second
     //     copy would just waste memory.
+    // See the note in SearchGraph.hpp for which parts of NetworKit to follow here, and for why
+    // Graph::sortEdges() must not be used for step 3.
     tlx::unused(G, outHead, inHead);
 }
 

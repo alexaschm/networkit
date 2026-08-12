@@ -106,6 +106,11 @@ private:
      *  Fixing the pattern node and only varying the target node is what keeps the search tree
      *  from exploding: every candidate at a given depth extends the same pattern node.
      *
+     *  Reuse: the terminal sets are stored as depth stamps here rather than as real sets, so
+     *  enumerating them means scanning. If that scan shows up in profiles, MaximalCliques.cpp
+     *  solves the same problem with pxvector/pxlookup and swapNodeToPos() - one buffer partitioned
+     *  by index boundaries, swapped in place, no allocation anywhere in the recursion.
+     *
      * @param depth Current search depth.
      * @param cursor In/out: where the previous call stopped, so iteration can resume.
      * @param pu Out: the pattern node to map.
@@ -231,6 +236,10 @@ private:
      * TODO: implement. Increment `nodesVisited` and, when the low bits are zero, ask
      * `Aux::SignalHandler` whether to keep running. Checking every single node would cost more
      * than the search itself, hence the mask.
+     *
+     * Reuse: this is the whole implementation - hold an `Aux::SignalHandler` member and call
+     * assureRunning() on it. Nothing about interruption needs to be written here. MaximalCliques
+     * uses exactly this in its recursion; see the module note in SubgraphIsomorphism.cpp.
      */
     void checkSignal() { throw std::logic_error("VF2Impl::checkSignal() is not implemented"); }
 

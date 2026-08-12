@@ -100,6 +100,11 @@ public:
      *  3. Fill parent[i] with the position of any already-ordered neighbour of order[i]. Any one
      *     will do for correctness; preferring the earliest keeps the candidate lists small.
      *
+     * Reuse: the greedy pattern-side loop is the core of RI and has to be written here. The target
+     * is only consulted for the RI_DS domain estimate, and if that estimate ever wants a
+     * structural ordering to lean on, CoreDecomposition::getNodeOrder() gives a degeneracy
+     * ordering for the cost of three lines - MaximalCliques.cpp shows the call.
+     *
      * @param pattern Snapshot of the pattern.
      * @param target Snapshot of the target, used for the RI_DS domain estimate.
      * @param patternLabels Empty when unlabelled.
@@ -221,6 +226,13 @@ private:
      * TODO: implement. A target node belongs to a pattern node's domain if their labels are
      * compatible and the target node's degree is at least the pattern node's - a node of degree
      * five can never sit on a target node of degree three. Under plain RI this is not called.
+     *
+     * Reuse: `domains` as declared below allocates a vector per position. Two alternatives worth
+     * taking from elsewhere in NetworKit before this grows hot: `Aux::SparseVector<T>` for the
+     * scratch marks used while filtering, since its reset() only clears entries that were actually
+     * touched; and the pxvector/pxlookup technique in MaximalCliques.cpp, which keeps a whole
+     * backtracking search's candidate sets in one buffer with no allocation at all. Do not reach
+     * for Aux::SetIntersector here - it returns a std::set and allocates on every call.
      */
     void initializeDomains();
 
@@ -241,6 +253,10 @@ private:
      *
      * TODO: implement. Increment `nodesVisited` and poll `Aux::SignalHandler` only when its low
      * bits are zero, so the check costs nothing in the common case.
+     *
+     * Reuse: hold an `Aux::SignalHandler` member and call assureRunning() on it - that is the
+     * entire body. Note that ParallelRI must *not* let the resulting InterruptException escape its
+     * OpenMP region; see the note on ParallelRIImpl::workerLoop().
      */
     void checkSignal();
 

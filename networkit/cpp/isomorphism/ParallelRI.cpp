@@ -75,6 +75,11 @@ public:
      *     call workerLoop(tid).
      *  3. That is all - the loop below handles work, stealing and termination. Do not touch the
      *     algorithm object from inside the region; sinks[tid] is the only channel out.
+     *
+     * Reuse: `Aux::getMaxNumberOfThreads()` from networkit/auxiliary/Parallelism.hpp is already
+     * used by the caller to size `sinks`. Note that there is no Aux::getThreadId() to go with it -
+     * the convention throughout NetworKit is a bare omp_get_thread_num() - and that loop indices
+     * in an `omp for` have to be NetworKit::omp_index rather than count.
      */
     void run() {
         // TODO: remove once implemented.
@@ -116,6 +121,12 @@ private:
      *  3. If expand() returns false the match limit was reached: set `stopped` and return, which
      *     unwinds every other worker as well.
      *  4. Poll Aux::SignalHandler occasionally so CTRL+C works.
+     *
+     * Reuse, with one caveat that matters here: `Aux::SignalHandler` is the right tool, but step 4
+     * must use its non-throwing isRunning() rather than assureRunning(). Letting the resulting
+     * InterruptException escape an OpenMP structured block is undefined behaviour. Set the
+     * existing `stopped` flag instead, let every worker unwind normally, and if the exception
+     * should reach the caller, throw it once after the parallel region has joined.
      */
     void workerLoop(index tid) {
         tlx::unused(tid);
@@ -168,6 +179,11 @@ private:
      * TODO: implement. Draw a uniformly random worker other than @a thief, using that worker's
      * own rngState so no two threads share an RNG. Random choice is what keeps the load balanced
      * without anybody having to track who is busy.
+     *
+     * Reuse: `Aux::Random::getURNG()` is already thread-local, so it gives a private generator per
+     * worker with no seeding work and no extra field. Using it here would make Worker::rngState
+     * redundant. The documented idiom is to bind the reference once outside the loop and drive a
+     * std::uniform_int_distribution with it, rather than calling Aux::Random::integer() per draw.
      */
     index pickVictim(index thief) {
         tlx::unused(thief);

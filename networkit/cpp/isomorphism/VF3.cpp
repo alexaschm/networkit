@@ -95,6 +95,10 @@ private:
      * classProbability(), then highest degree. Record in orderParent[i] the position of an
      * already-ordered neighbour, or `none` if there is none, so candidate enumeration can start
      * from the parent's image rather than from the whole target. Section 4 of the paper.
+     *
+     * Reuse: the greedy loop itself is specific to VF3 and has to be written. If the target side
+     * ever needs a cheap structural ordering to break ties with, CoreDecomposition::getNodeOrder()
+     * already provides a degeneracy ordering; MaximalCliques.cpp shows the three lines it takes.
      */
     void computeNodeOrder() {
         throw std::logic_error("VF3Impl::computeNodeOrder() is not implemented yet");
@@ -242,6 +246,9 @@ private:
      *
      * TODO: implement. Increment `nodesVisited` and poll `Aux::SignalHandler` only when its low
      * bits are zero, so the check costs nothing in the common case.
+     *
+     * Reuse: hold an `Aux::SignalHandler` member and call assureRunning() on it - that is the
+     * entire body. See the module note in SubgraphIsomorphism.cpp.
      */
     void checkSignal() { throw std::logic_error("VF3Impl::checkSignal() is not implemented"); }
 
