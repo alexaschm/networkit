@@ -8,6 +8,7 @@
 
 #include <networkit/Globals.hpp>
 #include <networkit/graph/Graph.hpp>
+#include <tlx/math/div_ceil.hpp>
 
 namespace NetworKit {
 namespace IsomorphismDetails {

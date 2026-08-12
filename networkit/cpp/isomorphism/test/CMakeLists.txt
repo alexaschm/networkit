@@ -1,0 +1,1 @@
+networkit_add_test(isomorphism VF2GTest auxiliary generators graph io)
