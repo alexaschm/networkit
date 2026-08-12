@@ -18,9 +18,9 @@
 
 namespace NetworKit {
 
-class VF2GTest : public testing::Test {};
+class SearchGraphGTest : public testing::Test {};
 
-TEST_F(VF2GTest, testSearchGraphBasicFuncs) {
+TEST_F(SearchGraphGTest, testSearchGraphBasicFuncs) {
 
     Graph G = Graph(10, false, true);
 
@@ -35,7 +35,7 @@ TEST_F(VF2GTest, testSearchGraphBasicFuncs) {
 
 }
 
-TEST_F(VF2GTest, testSearchGraphCSRUndirected) {
+TEST_F(SearchGraphGTest, testSearchGraphCSRUndirected) {
 
     // Graph G is undirected
     Graph G = Graph(10);
@@ -81,7 +81,7 @@ TEST_F(VF2GTest, testSearchGraphCSRUndirected) {
 
 }
 
-TEST_F(VF2GTest, testSearchGraphCSRDirected) {
+TEST_F(SearchGraphGTest, testSearchGraphCSRDirected) {
 
     // Graph G is directed
     Graph G = Graph(8, false, true);
@@ -135,7 +135,7 @@ TEST_F(VF2GTest, testSearchGraphCSRDirected) {
 
 }
 
-TEST_F(VF2GTest, testSearchGraphAdjMatrix) {
+TEST_F(SearchGraphGTest, testSearchGraphAdjMatrix) {
 
     // Graph G is directed and needs two 64-bit words per row
     Graph G = Graph(75, false, true);
@@ -181,7 +181,7 @@ TEST_F(VF2GTest, testSearchGraphAdjMatrix) {
 
 }
 
-TEST_F(VF2GTest, testCSRAdjEqualBehaviour) {
+TEST_F(SearchGraphGTest, testCSRAdjEqualBehaviour) {
 
     METISGraphReader reader;
     Graph G = reader.read("input/karate.graph");
