@@ -5,6 +5,7 @@
  *      Author: Alexandra
  */
 
+#include <algorithm>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -18,6 +19,47 @@
 #include "../SearchGraph.hpp"
 
 namespace NetworKit {
+
+namespace {
+
+/// What SearchGraph promises an out-slice contains: the distinct out-neighbours of @a u, without
+/// @a u itself, sorted ascending. Not the same as G.degreeOut(u) once G has loops or multi-edges.
+std::vector<node> simpleOutNeighbors(const Graph &G, node u) {
+    std::vector<node> neighbors;
+    G.forNeighborsOf(u, [&](node v) {
+        if (v != u)
+            neighbors.push_back(v);
+    });
+    std::sort(neighbors.begin(), neighbors.end());
+    neighbors.erase(std::unique(neighbors.begin(), neighbors.end()), neighbors.end());
+    return neighbors;
+}
+
+std::vector<node> simpleInNeighbors(const Graph &G, node u) {
+    std::vector<node> neighbors;
+    G.forInNeighborsOf(u, [&](node v) {
+        if (v != u)
+            neighbors.push_back(v);
+    });
+    std::sort(neighbors.begin(), neighbors.end());
+    neighbors.erase(std::unique(neighbors.begin(), neighbors.end()), neighbors.end());
+    return neighbors;
+}
+
+/// Every slice must match the simple-graph neighbourhood exactly, in both directions.
+void expectSlicesAreSimpleNeighborhoods(const Graph &G, const IsomorphismDetails::SearchGraph &SG) {
+    G.forNodes([&](node u) {
+        const std::vector<node> expectedOut = simpleOutNeighbors(G, u);
+        const std::vector<node> expectedIn = simpleInNeighbors(G, u);
+
+        EXPECT_EQ(std::vector<node>(SG.outBegin(u), SG.outEnd(u)), expectedOut);
+        EXPECT_EQ(std::vector<node>(SG.inBegin(u), SG.inEnd(u)), expectedIn);
+        EXPECT_EQ(SG.outDegree(u), expectedOut.size());
+        EXPECT_EQ(SG.inDegree(u), expectedIn.size());
+    });
+}
+
+} // namespace
 
 class SearchGraphGTest : public testing::Test {};
 
@@ -54,10 +96,10 @@ TEST_F(SearchGraphGTest, testSearchGraphCSRUndirected) {
 
     IsomorphismDetails::SearchGraph SG = IsomorphismDetails::SearchGraph(G, false);
 
-    // Check inDegrees = outDegrees, even nodes never have incident edges so none should be found
+    expectSlicesAreSimpleNeighborhoods(G, SG);
+
+    // Even nodes never have incident edges, so none should be found
     G.forNodes([&](node u) {
-        EXPECT_EQ(SG.inDegree(u), G.degreeIn(u));
-        EXPECT_EQ(SG.outDegree(u), G.degreeOut(u));
         EXPECT_EQ(SG.outDegree(u), SG.inDegree(u));
         if (u % 2 == 0) {
             for (node v = 0; v < G.upperNodeIdBound(); v++) {
@@ -67,17 +109,26 @@ TEST_F(SearchGraphGTest, testSearchGraphCSRUndirected) {
         }
     });
 
-    // All present edges must be found (oriented both ways)
+    // All present edges must be found (oriented both ways). The self-loop at node 5 is dropped,
+    // so it must NOT be found - both semantics only ever constrain pairs of distinct nodes.
     G.forEdges([&](node u, node v) {
-        EXPECT_TRUE(SG.hasEdge(u, v));
-        EXPECT_TRUE(SG.hasEdge(v, u));
+        if (u == v) {
+            EXPECT_FALSE(SG.hasEdge(u, v));
+        } else {
+            EXPECT_TRUE(SG.hasEdge(u, v));
+            EXPECT_TRUE(SG.hasEdge(v, u));
+        }
     });
 
-    // Check in and out slice for node 5
-    EXPECT_EQ(std::vector<node>(SG.inBegin(5), SG.inEnd(5)), (std::vector<node>{1, 3, 5, 7, 9}));
-    EXPECT_EQ(std::vector<node>(SG.outBegin(5), SG.outEnd(5)), (std::vector<node>{1, 3, 5, 7, 9}));
+    // Check in and out slice for node 5. The self-loop is not part of either.
+    EXPECT_EQ(std::vector<node>(SG.inBegin(5), SG.inEnd(5)), (std::vector<node>{1, 3, 7, 9}));
+    EXPECT_EQ(std::vector<node>(SG.outBegin(5), SG.outEnd(5)), (std::vector<node>{1, 3, 7, 9}));
     EXPECT_EQ(std::vector<node>(SG.inBegin(5), SG.inEnd(5)),
               std::vector<node>(SG.outBegin(5), SG.outEnd(5)));
+
+    // G still has the self-loop, so the snapshot degree is one lower than the Graph degree
+    EXPECT_EQ(G.degreeOut(5), 5);
+    EXPECT_EQ(SG.outDegree(5), 4);
 }
 
 TEST_F(SearchGraphGTest, testSearchGraphCSRDirected) {
@@ -98,21 +149,17 @@ TEST_F(SearchGraphGTest, testSearchGraphCSRDirected) {
 
     IsomorphismDetails::SearchGraph SG = IsomorphismDetails::SearchGraph(G, false);
 
-    // Check inDegrees and outDegrees
-    G.forNodes([&](node u) {
-        EXPECT_EQ(SG.inDegree(u), G.degreeIn(u));
-        EXPECT_EQ(SG.outDegree(u), G.degreeOut(u));
-    });
+    expectSlicesAreSimpleNeighborhoods(G, SG);
 
     EXPECT_NE(SG.inDegree(0), SG.outDegree(0));
 
-    // All present edges must be found, explicitly check self loop at node 0
+    // All present edges must be found, except the self loop at node 0, which is dropped
     G.forEdges([&](node u, node v) {
-        EXPECT_TRUE(SG.hasEdge(u, v));
-        if (u != v) {
-            EXPECT_FALSE(SG.hasEdge(v, u));
+        if (u == v) {
+            EXPECT_FALSE(SG.hasEdge(u, v));
         } else {
-            EXPECT_TRUE(SG.hasEdge(v, u));
+            EXPECT_TRUE(SG.hasEdge(u, v));
+            EXPECT_FALSE(SG.hasEdge(v, u));
         }
     });
 
@@ -121,9 +168,9 @@ TEST_F(SearchGraphGTest, testSearchGraphCSRDirected) {
     EXPECT_FALSE(SG.hasEdge(0, 4));
     EXPECT_FALSE(SG.hasEdge(0, 5));
 
-    // Check in and out slices
-    EXPECT_EQ(std::vector<node>(SG.inBegin(0), SG.inEnd(0)), (std::vector<node>{0}));
-    EXPECT_EQ(std::vector<node>(SG.outBegin(0), SG.outEnd(0)), (std::vector<node>{0, 1, 2, 3}));
+    // Check in and out slices. Node 0's self-loop appears in neither.
+    EXPECT_EQ(std::vector<node>(SG.inBegin(0), SG.inEnd(0)), (std::vector<node>{}));
+    EXPECT_EQ(std::vector<node>(SG.outBegin(0), SG.outEnd(0)), (std::vector<node>{1, 2, 3}));
     EXPECT_EQ(std::vector<node>(SG.inBegin(1), SG.inEnd(1)), (std::vector<node>{0}));
     EXPECT_EQ(std::vector<node>(SG.outBegin(1), SG.outEnd(1)), (std::vector<node>{}));
 

@@ -42,6 +42,26 @@ namespace IsomorphismDetails {
  *   built for the *pattern*, which is small by assumption. Building it for a target with a
  *   million nodes would need 125 GB.
  *
+ * ## What it normalizes away
+ *
+ * The snapshot is the **simple graph underlying** @a G: parallel edges are collapsed to one, and
+ * self-loops are dropped. So a slice never repeats a neighbour and never contains its own node,
+ * @ref outDegree() / @ref inDegree() are simple-graph degrees rather than `Graph::degree()`, and
+ * @ref hasEdge(u, u) is always false.
+ *
+ * This is not a convenience, it is what makes the search correct. Both matching semantics only
+ * ever constrain pairs of *distinct* nodes, so neither multiplicity nor a self-loop can change
+ * which matches exist - but every algorithm in this module enumerates candidates by walking a
+ * slice, so a repeated neighbour would make it try the same candidate twice and report the same
+ * match twice. Worse, all of them prune by comparing degrees and neighbourhood cardinalities,
+ * which are *set* sizes: an inflated degree on the pattern side makes valid host nodes fail the
+ * `deg(target) >= deg(pattern)` test and silently discards real matches. `Graph::addEdge()`
+ * permits parallel edges by default, so this is reachable without doing anything unusual.
+ *
+ * Normalizing here rather than in each algorithm also makes @ref SubgraphIsomorphism's promise
+ * that target self-loops "are never used" true by construction, instead of leaving four separate
+ * implementations to remember it.
+ *
  * ## Ownership
  *
  * The snapshot copies what it needs, so it stays valid even if nobody holds on to the original
@@ -69,7 +89,8 @@ public:
 
     bool isDirected() const noexcept { return directed; }
 
-    /// First out-neighbour of @a u. Iterate up to @ref outEnd(). The range is sorted ascending.
+    /// First out-neighbour of @a u. Iterate up to @ref outEnd(). The range is sorted **strictly**
+    /// ascending: no duplicates, and @a u itself is never in it.
     const node *outBegin(node u) const noexcept { return outHead.data() + outFirst[u]; }
 
     /// One past the last out-neighbour of @a u.
@@ -85,8 +106,11 @@ public:
         return directed ? inHead.data() + inFirst[u + 1] : outEnd(u);
     }
 
+    /// Number of *distinct* out-neighbours of @a u, not counting @a u itself. This is not
+    /// `Graph::degreeOut(u)` when @a G has parallel edges or a self-loop at @a u.
     count outDegree(node u) const noexcept { return outFirst[u + 1] - outFirst[u]; }
 
+    /// Number of *distinct* in-neighbours of @a u, not counting @a u itself.
     count inDegree(node u) const noexcept {
         return directed ? inFirst[u + 1] - inFirst[u] : outDegree(u);
     }
@@ -98,8 +122,9 @@ public:
      * search over the sorted out-neighbours of @a u. Either way this is safe to call from an
      * inner loop, unlike `Graph::hasEdge()`.
      *
-     * Both @a u and @a v must be below @ref upperNodeIdBound(); a node that was *removed* from
-     * @a G is fine and simply has no edges, but an id beyond the bound is undefined.
+     * Always false for `u == v`, whether or not @a G had a self-loop there. Both @a u and @a v
+     * must be below @ref upperNodeIdBound(); a node that was *removed* from @a G is fine and
+     * simply has no edges, but an id beyond the bound is undefined.
      */
     bool hasEdge(node u, node v) const noexcept;
 
@@ -108,7 +133,9 @@ private:
      * Fill outFirst/outHead, and inFirst/inHead when the graph is directed.
      *
      * Counts degrees into the offset array, prefix-sums it into start offsets, scatters the
-     * neighbours, then sorts each slice.
+     * neighbours, sorts each slice, then compacts the slices to drop self-loops and collapse
+     * parallel edges. The degrees taken from `Graph` are an upper bound on the final slice sizes;
+     * the compaction pass shrinks the arrays to the true size.
      *
      * Reuse: NetworKit has no CSR graph class to inherit from, so this has to be written, but the
      * count/prefix-sum/scatter shape is established in the repo - see
@@ -128,6 +155,9 @@ private:
      * Fill the bit-packed adjacency matrix: matrixStride 64-bit words per row, bit v of row u set
      * iff the edge u -> v exists. For an undirected graph both directions are set, so hasEdge()
      * never has to normalize the order of its arguments.
+     *
+     * Skips self-loops, so that the matrix and the compacted CSR give the same answer for every
+     * pair - the two hasEdge() backends must not disagree.
      *
      * Reuse: `tlx::div_ceil(z, 64)` from tlx/math/div_ceil.hpp expresses the stride with the
      * intent visible. Beyond that there is nothing to reuse - NetworKit has no bitset abstraction
