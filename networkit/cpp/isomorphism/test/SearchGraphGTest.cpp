@@ -11,6 +11,7 @@
 #include <gtest/gtest.h>
 
 #include <networkit/graph/Graph.hpp>
+#include <networkit/graph/GraphTools.hpp>
 #include <networkit/io/EdgeListReader.hpp>
 #include <networkit/io/METISGraphReader.hpp>
 #include <networkit/isomorphism/SubgraphIsomorphism.hpp>
@@ -363,6 +364,66 @@ TEST_F(SearchGraphGTest, testSlicesAreStrictlyAscending) {
                 EXPECT_LT(*it, *(it + 1)) << "in-slice of " << u << " is not strictly ascending";
         }
     });
+}
+
+TEST_F(SearchGraphGTest, testMatrixFallsBackForLargeIdBound) {
+
+    // The matrix needs one bit per ordered pair of node *ids*, so it is sized by
+    // upperNodeIdBound() rather than by how many nodes exist. Asking for it on anything but a
+    // small pattern is a request the snapshot declines - and the decline has to be invisible,
+    // because hasEdge() answers from the CSR either way.
+    Graph big = Graph(30000);
+    big.addEdge(1, 2);
+
+    IsomorphismDetails::SearchGraph SBig = IsomorphismDetails::SearchGraph(big, true);
+
+    EXPECT_FALSE(SBig.hasAdjacencyMatrix());
+    EXPECT_TRUE(SBig.hasEdge(1, 2));
+    EXPECT_TRUE(SBig.hasEdge(2, 1));
+    EXPECT_FALSE(SBig.hasEdge(1, 3));
+    EXPECT_FALSE(SBig.hasEdge(29998, 29999));
+
+    // The trap this really guards: removeNode() clears a slot but never lowers the id bound, so
+    // a three-node pattern carved out of a large graph still asks for the large graph's matrix.
+    Graph carved = Graph(30000);
+    carved.addEdge(0, 1);
+    carved.addEdge(1, 2);
+    for (node u = 3; u < 30000; ++u)
+        carved.removeNode(u);
+
+    ASSERT_EQ(carved.numberOfNodes(), 3);
+    ASSERT_EQ(carved.upperNodeIdBound(), 30000);
+
+    IsomorphismDetails::SearchGraph SCarved = IsomorphismDetails::SearchGraph(carved, true);
+
+    EXPECT_FALSE(SCarved.hasAdjacencyMatrix());
+    EXPECT_TRUE(SCarved.hasEdge(0, 1));
+    EXPECT_TRUE(SCarved.hasEdge(1, 2));
+    EXPECT_FALSE(SCarved.hasEdge(0, 2));
+
+    // Compacting the ids is what the warning tells the caller to do, so it must actually work
+    Graph compacted =
+        GraphTools::getCompactedGraph(carved, GraphTools::getContinuousNodeIds(carved));
+
+    ASSERT_EQ(compacted.upperNodeIdBound(), 3);
+
+    IsomorphismDetails::SearchGraph SCompacted = IsomorphismDetails::SearchGraph(compacted, true);
+
+    EXPECT_TRUE(SCompacted.hasAdjacencyMatrix());
+    expectSlicesAreSimpleNeighborhoods(compacted, SCompacted);
+
+    // A few removed nodes must not trip the guard - that is the ordinary case
+    Graph ordinary = Graph(75);
+    ordinary.addEdge(1, 20);
+    ordinary.removeNode(38);
+
+    IsomorphismDetails::SearchGraph SOrdinary = IsomorphismDetails::SearchGraph(ordinary, true);
+
+    EXPECT_TRUE(SOrdinary.hasAdjacencyMatrix());
+    EXPECT_TRUE(SOrdinary.hasEdge(1, 20));
+
+    // Not requesting the matrix must leave it unbuilt whatever the size
+    EXPECT_FALSE(IsomorphismDetails::SearchGraph(ordinary, false).hasAdjacencyMatrix());
 }
 
 } // namespace NetworKit

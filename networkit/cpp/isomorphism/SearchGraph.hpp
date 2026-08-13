@@ -3,6 +3,8 @@
 
 // Private header of the isomorphism module. Not installed, not part of the public API.
 
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -58,9 +60,6 @@ namespace IsomorphismDetails {
  * `deg(target) >= deg(pattern)` test and silently discards real matches. `Graph::addEdge()`
  * permits parallel edges by default, so this is reachable without doing anything unusual.
  *
- * Normalizing here rather than in each algorithm also makes @ref SubgraphIsomorphism's promise
- * that target self-loops "are never used" true by construction, instead of leaving four separate
- * implementations to remember it.
  *
  * ## Ownership
  *
@@ -76,7 +75,10 @@ public:
      *
      * @param G The graph to snapshot. Only read, never stored.
      * @param buildMatrix Whether to also build the bit-packed adjacency matrix. Pass true for the
-     *        pattern, false for the target. Passing true for a large graph will exhaust memory.
+     *        pattern, false for the target. This is a *request*, not a demand: it is honoured
+     *        only while @ref upperNodeIdBound() stays small, and quietly dropped otherwise, since
+     *        the matrix is an accelerator that correctness never depends on. Ask
+     *        @ref hasAdjacencyMatrix() what actually happened.
      */
     SearchGraph(const Graph &G, bool buildMatrix);
 
@@ -88,6 +90,9 @@ public:
     count upperNodeIdBound() const noexcept { return z; }
 
     bool isDirected() const noexcept { return directed; }
+
+    /// Whether the bit-packed adjacency matrix was actually built.
+    bool hasAdjacencyMatrix() const noexcept { return hasMatrix; }
 
     /// First out-neighbour of @a u. Iterate up to @ref outEnd(). The range is sorted **strictly**
     /// ascending: no duplicates, and @a u itself is never in it.
@@ -126,7 +131,13 @@ public:
      * must be below @ref upperNodeIdBound(); a node that was *removed* from @a G is fine and
      * simply has no edges, but an id beyond the bound is undefined.
      */
-    bool hasEdge(node u, node v) const noexcept;
+    bool hasEdge(node u, node v) const noexcept {
+        if (hasMatrix)
+            return (matrix[static_cast<std::size_t>(u) * matrixStride + v / 64] >> (v % 64)) & 1u;
+
+        // The slices are sorted, so a binary search is the best we can do without the matrix.
+        return std::binary_search(outBegin(u), outEnd(u), v);
+    }
 
 private:
     /**
@@ -159,9 +170,8 @@ private:
      * Skips self-loops, so that the matrix and the compacted CSR give the same answer for every
      * pair - the two hasEdge() backends must not disagree.
      *
-     * Reuse: `tlx::div_ceil(z, 64)` from tlx/math/div_ceil.hpp expresses the stride with the
-     * intent visible. Beyond that there is nothing to reuse - NetworKit has no bitset abstraction
-     * and does not use std::bitset anywhere, so the masking is written by hand.
+     * Whether the matrix is affordable at all is decided by the constructor.
+     *
      */
     void buildAdjacencyMatrix(const Graph &G);
 

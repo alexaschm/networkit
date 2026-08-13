@@ -3,12 +3,25 @@
 #include <numeric>
 #include <vector>
 
+#include <networkit/auxiliary/Log.hpp>
+
 #include "SearchGraph.hpp"
 
 namespace NetworKit {
 namespace IsomorphismDetails {
 
 namespace {
+
+/**
+ * Largest node id bound for which the bit matrix is still worth building.
+ *
+ * The CSR costs memory per edge; the matrix costs a bit per *ordered pair of node ids*, so it is
+ * the one part of the snapshot whose size ignores how sparse the graph is. This bound is the
+ * integer square root of 64 MiB expressed in bits, which is orders of magnitude beyond any real
+ * pattern. It is a soft boundary: crossing it costs speed, not correctness, because hasEdge()
+ * simply falls back to the CSR.
+ */
+constexpr count maxMatrixNodes = 23170;
 
 /**
  * Drop self-loops and collapse parallel edges in a sorted CSR, in place.
@@ -47,6 +60,26 @@ void compactSlices(std::vector<index> &first, std::vector<node> &head, count z) 
 SearchGraph::SearchGraph(const Graph &G, bool buildMatrix)
     : matrixStride(0), n(G.numberOfNodes()), z(G.upperNodeIdBound()), directed(G.isDirected()),
       hasMatrix(buildMatrix) {
+    // The matrix is a request, not a demand: when it will not fit, drop it and let hasEdge() use
+    // the CSR, which is how every target snapshot already works. Note the bound is the *id* bound,
+    // and removeNode() lowers neither it nor the ids above it, so a small pattern carved out of a
+    // large graph still asks for the large graph's matrix. That case is a caller mistake with an
+    // easy fix, so it warrants a warning; a genuinely large pattern does not, since there is
+    // nothing to do differently.
+    if (hasMatrix && z > maxMatrixNodes) {
+        if (n <= z / 2) {
+            WARN("SearchGraph: skipping the adjacency matrix - the node id bound is ", z,
+                 " but only ", n,
+                 " nodes exist. Compact the node ids first, e.g. with "
+                 "GraphTools::getCompactedGraph(). Falling back to the CSR, which is correct but "
+                 "slower.");
+        } else {
+            INFO("SearchGraph: skipping the adjacency matrix - it needs a bit per ordered pair of ",
+                 z, " node ids, and is only meant for small patterns. Falling back to the CSR.");
+        }
+        hasMatrix = false;
+    }
+
     buildCSR(G);
     if (hasMatrix)
         buildAdjacencyMatrix(G);
@@ -118,14 +151,6 @@ void SearchGraph::buildAdjacencyMatrix(const Graph &G) {
             matrix[static_cast<std::size_t>(u) * matrixStride + v / 64] |= uint64_t{1} << (v % 64);
         });
     });
-}
-
-bool SearchGraph::hasEdge(node u, node v) const noexcept {
-    if (hasMatrix)
-        return (matrix[static_cast<std::size_t>(u) * matrixStride + v / 64] >> (v % 64)) & 1u;
-
-    // The slices are sorted, so a binary search is the best we can do without the matrix.
-    return std::binary_search(outBegin(u), outEnd(u), v);
 }
 
 } // namespace IsomorphismDetails
