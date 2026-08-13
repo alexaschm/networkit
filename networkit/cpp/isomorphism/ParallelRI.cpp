@@ -153,7 +153,7 @@ private:
      * TODO: implement. Push to the back, then bump sinceLastPublish and call coalesceIntoTask()
      * when it crosses the threshold.
      */
-    void pushLocal(index tid, RIImpl::State state) {
+    void pushLocal(index tid, RIImpl::State &&state) {
         tlx::unused(tid, state);
         throw std::logic_error("ParallelRIImpl::pushLocal() is not implemented yet");
     }
