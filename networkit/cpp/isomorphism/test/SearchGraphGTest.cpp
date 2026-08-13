@@ -238,4 +238,131 @@ TEST_F(SearchGraphGTest, testCSRAdjEqualBehaviour) {
     }
 }
 
+TEST_F(SearchGraphGTest, testMultiEdgesCollapsedUndirected) {
+
+    // Graph::addEdge() permits parallel edges by default, so a snapshot has to collapse them:
+    // a repeated neighbour would make a search enumerate the same candidate twice, and would
+    // inflate the degrees that every feasibility rule prunes on.
+    Graph G = Graph(6);
+
+    G.addEdge(1, 2);
+    G.addEdge(1, 2);
+    G.addEdge(2, 1);
+    G.addEdge(3, 4);
+    G.addEdge(5, 5);
+    G.addEdge(5, 5);
+
+    ASSERT_EQ(G.degreeOut(1), 3);
+    ASSERT_EQ(G.degreeOut(5), 2);
+
+    IsomorphismDetails::SearchGraph SG = IsomorphismDetails::SearchGraph(G, false);
+
+    expectSlicesAreSimpleNeighborhoods(G, SG);
+
+    EXPECT_EQ(std::vector<node>(SG.outBegin(1), SG.outEnd(1)), (std::vector<node>{2}));
+    EXPECT_EQ(std::vector<node>(SG.outBegin(2), SG.outEnd(2)), (std::vector<node>{1}));
+    EXPECT_EQ(SG.outDegree(1), 1);
+    EXPECT_EQ(SG.outDegree(2), 1);
+
+    // A repeated self-loop collapses to nothing at all
+    EXPECT_EQ(SG.outDegree(5), 0);
+    EXPECT_FALSE(SG.hasEdge(5, 5));
+
+    EXPECT_TRUE(SG.hasEdge(1, 2));
+    EXPECT_TRUE(SG.hasEdge(2, 1));
+    EXPECT_TRUE(SG.hasEdge(3, 4));
+}
+
+TEST_F(SearchGraphGTest, testMultiEdgesCollapsedDirected) {
+
+    Graph G = Graph(6, false, true);
+
+    G.addEdge(1, 2);
+    G.addEdge(1, 2);
+    G.addEdge(2, 1);
+    G.addEdge(3, 3);
+    G.addEdge(3, 3);
+
+    ASSERT_EQ(G.degreeOut(1), 2);
+    ASSERT_EQ(G.degreeIn(2), 2);
+
+    IsomorphismDetails::SearchGraph SG = IsomorphismDetails::SearchGraph(G, false);
+
+    expectSlicesAreSimpleNeighborhoods(G, SG);
+
+    EXPECT_EQ(std::vector<node>(SG.outBegin(1), SG.outEnd(1)), (std::vector<node>{2}));
+    EXPECT_EQ(std::vector<node>(SG.inBegin(2), SG.inEnd(2)), (std::vector<node>{1}));
+    EXPECT_EQ(std::vector<node>(SG.outBegin(2), SG.outEnd(2)), (std::vector<node>{1}));
+    EXPECT_EQ(std::vector<node>(SG.inBegin(1), SG.inEnd(1)), (std::vector<node>{2}));
+
+    // The direction still matters - collapsing must not symmetrize anything
+    EXPECT_TRUE(SG.hasEdge(1, 2));
+    EXPECT_TRUE(SG.hasEdge(2, 1));
+    EXPECT_FALSE(SG.hasEdge(1, 3));
+
+    EXPECT_EQ(SG.outDegree(3), 0);
+    EXPECT_EQ(SG.inDegree(3), 0);
+    EXPECT_FALSE(SG.hasEdge(3, 3));
+}
+
+TEST_F(SearchGraphGTest, testBackendsAgreeOnLoopsAndMultiEdges) {
+
+    // The two hasEdge() backends must not drift apart: the CSR drops self-loops, so the matrix
+    // has to leave the diagonal clear too. karate has neither loops nor multi-edges, so
+    // testCSRAdjEqualBehaviour above cannot catch this.
+    for (bool directed : {false, true}) {
+        Graph G = Graph(70, false, directed);
+
+        G.addEdge(0, 1);
+        G.addEdge(0, 1);
+        G.addEdge(1, 0);
+        G.addEdge(0, 0);
+        G.addEdge(64, 65); // second word of each row
+        G.addEdge(64, 65);
+        G.addEdge(65, 64);
+        G.addEdge(69, 69);
+        G.addEdge(2, 66);
+        G.addEdge(66, 2);
+
+        IsomorphismDetails::SearchGraph S_CSR = IsomorphismDetails::SearchGraph(G, false);
+        IsomorphismDetails::SearchGraph S_Adj = IsomorphismDetails::SearchGraph(G, true);
+
+        expectSlicesAreSimpleNeighborhoods(G, S_CSR);
+        expectSlicesAreSimpleNeighborhoods(G, S_Adj);
+
+        for (node u = 0; u < G.upperNodeIdBound(); u++) {
+            for (node v = 0; v < G.upperNodeIdBound(); v++) {
+                EXPECT_EQ(S_CSR.hasEdge(u, v), S_Adj.hasEdge(u, v))
+                    << "directed=" << directed << " u=" << u << " v=" << v;
+            }
+            // No node is ever its own neighbour, whichever backend answers
+            EXPECT_FALSE(S_CSR.hasEdge(u, u));
+            EXPECT_FALSE(S_Adj.hasEdge(u, u));
+        }
+    }
+}
+
+TEST_F(SearchGraphGTest, testSlicesAreStrictlyAscending) {
+
+    // Strictly ascending proves sortedness and dedup at once, and hasEdge() binary-searches the
+    // slice, so this is the invariant the whole class rests on.
+    METISGraphReader reader;
+    Graph G = reader.read("input/karate.graph");
+
+    IsomorphismDetails::SearchGraph SG = IsomorphismDetails::SearchGraph(G, false);
+
+    G.forNodes([&](node u) {
+        for (const node *it = SG.outBegin(u); it != SG.outEnd(u); ++it) {
+            EXPECT_NE(*it, u) << "node " << u << " is its own neighbour";
+            if (it + 1 != SG.outEnd(u))
+                EXPECT_LT(*it, *(it + 1)) << "out-slice of " << u << " is not strictly ascending";
+        }
+        for (const node *it = SG.inBegin(u); it != SG.inEnd(u); ++it) {
+            EXPECT_NE(*it, u);
+            if (it + 1 != SG.inEnd(u))
+                EXPECT_LT(*it, *(it + 1)) << "in-slice of " << u << " is not strictly ascending";
+        }
+    });
+}
+
 } // namespace NetworKit
