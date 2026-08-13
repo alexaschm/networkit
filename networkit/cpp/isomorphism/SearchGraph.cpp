@@ -1,6 +1,7 @@
 #include <algorithm>
-
-#include <tlx/unused.hpp>
+#include <cstddef>
+#include <numeric>
+#include <vector>
 
 #include "SearchGraph.hpp"
 
@@ -16,98 +17,64 @@ SearchGraph::SearchGraph(const Graph &G, bool buildMatrix)
 }
 
 void SearchGraph::buildCSR(const Graph &G) {
-    // Leave the object in a valid, empty state so that every accessor stays in bounds while the
-    // real implementation is missing: one offset per node plus the sentinel, all zero, means
-    // every node has an empty neighbour slice.
-    // TODO: fill the CSR arrays.
-    //  1. Count the out-degree of every node into outFirst[u + 1], then prefix-sum outFirst so
-    //     that outFirst[u] becomes the start of u's slice and outFirst[z] the total edge count.
-    //     Nodes that do not exist keep a degree of 0 and end up with an empty slice, which is
-    //     what lets callers skip hasNode() checks.
-    //  2. Size outHead to outFirst[z] and walk the edges again with G.forEdges(), writing each
-    //     neighbour into its node's slice.
-    //  3. Sort every slice ascending. hasEdge() binary-searches it and the feasibility rules
-    //     intersect two slices, so both rely on the order.
-    //  4. Repeat steps 1-3 for the in-edges into inFirst/inHead, but only when `directed`. For an
-    //     undirected graph inBegin()/inEnd() fall back to the out-arrays, so building a second
-    //     copy would just waste memory.
-    // See the note in SearchGraph.hpp for which parts of NetworKit to follow here, and for why
-    // Graph::sortEdges() must not be used for step 3.
-    // tlx::unused(G, outHead, inHead);
-
+    // Count the out-degree of every node into outFirst[u + 1], then turn the counts into start
+    // offsets with a prefix sum. A node that was removed keeps a degree of 0 and so ends up with
+    // an empty slice, which is what lets callers skip hasNode() checks.
     outFirst.assign(z + 1, 0);
-    if (directed) {
-        inFirst.assign(z + 1, 0);
-    }
-
-    // Populate outFirst
-    for (node u = 0; u < G.upperNodeIdBound(); u++) {
+    for (node u = 0; u < z; ++u) {
         if (G.hasNode(u)) {
-            outFirst[u+1] = G.degreeOut(u);
+            outFirst[u + 1] = G.degreeOut(u);
         }
     }
     std::partial_sum(outFirst.begin(), outFirst.end(), outFirst.begin());
 
-    // Populate outHead
-    std::vector<count> cursor = outFirst;
+    // Place every neighbour into its node's slice. forEdges() visits an undirected edge once,
+    // oriented u >= v, so the reverse orientation has to be added here - except for a self-loop,
+    // which Graph stores only once and which degreeOut() therefore also counted only once.
     outHead.resize(outFirst[z]);
+    std::vector<index> cursor = outFirst;
     G.forEdges([&](node u, node v) {
         outHead[cursor[u]++] = v;
-        // forEdges only iterates over each edge with u >= v once
-        // Add the reverse orientation as well, except for self-loops
         if (!directed && u != v) {
             outHead[cursor[v]++] = u;
         }
     });
 
-    // Sort slices
+    // hasEdge() binary-searches a slice and the feasibility rules intersect two of them, so both
+    // rely on the order. Sorting over pointers rather than iterators keeps the offsets unsigned.
     for (node u = 0; u < z; ++u) {
-        std::sort(
-            outHead.begin() + outFirst[u],
-            outHead.begin() + outFirst[u+1]
-        );
+        std::sort(outHead.data() + outFirst[u], outHead.data() + outFirst[u + 1]);
     }
 
-    // If G is directed, populate inFirst and inHead
-    if (directed){
-        for (node u = 0; u < G.upperNodeIdBound(); u++) {
+    // For an undirected graph inBegin()/inEnd() fall back to the out-arrays, so a second copy
+    // would only waste memory.
+    if (directed) {
+        inFirst.assign(z + 1, 0);
+        for (node u = 0; u < z; ++u) {
             if (G.hasNode(u)) {
-                inFirst[u+1] = G.degreeIn(u);
+                inFirst[u + 1] = G.degreeIn(u);
             }
         }
         std::partial_sum(inFirst.begin(), inFirst.end(), inFirst.begin());
 
-        std::vector<count> cursor = inFirst;
         inHead.resize(inFirst[z]);
-        G.forEdges([&](node u, node v) {
-            inHead[cursor[v]++] = u;
-        });
+        std::vector<index> inCursor = inFirst;
+        G.forEdges([&](node u, node v) { inHead[inCursor[v]++] = u; });
 
         for (node u = 0; u < z; ++u) {
-            std::sort(
-                inHead.begin() + inFirst[u],
-                inHead.begin() + inFirst[u+1]
-            );
+            std::sort(inHead.data() + inFirst[u], inHead.data() + inFirst[u + 1]);
         }
     }
 }
 
 void SearchGraph::buildAdjacencyMatrix(const Graph &G) {
-    // As above: a correctly sized, all-zero matrix is a valid "no edges" answer, so hasEdge()
-    // cannot read out of bounds while this is unimplemented.
-    // TODO: set one bit per edge.
-    //  1. For every edge u -> v, set bit v of row u:
-    //         matrix[u * matrixStride + v / 64] |= uint64_t{1} << (v % 64);
-    //  2. For an undirected graph set both u -> v and v -> u, so that hasEdge() never has to
-    //     normalize the order of its arguments.
-    // tlx::unused(G);
-
     matrixStride = tlx::div_ceil(z, 64);
     matrix.assign(static_cast<std::size_t>(z) * matrixStride, 0);
 
+    // Setting the same bit twice is harmless, so parallel edges need no handling here.
     G.forNodes([&](node u) {
         G.forNeighborsOf(u, [&](node v) {
-            matrix[u * matrixStride + v / 64] |= uint64_t{1} << (v % 64);
+            matrix[static_cast<std::size_t>(u) * matrixStride + v / 64] |= uint64_t{1} << (v % 64);
         });
     });
 }

@@ -1,19 +1,20 @@
 /*
- * VF2GTest.cpp
+ * SearchGraphGTest.cpp
  *
  *  Created on: Aug 12, 2026
  *      Author: Alexandra
  */
 
-#include <iostream>
-#include <bitset>
+#include <vector>
+
 #include <gtest/gtest.h>
 
 #include <networkit/graph/Graph.hpp>
 #include <networkit/io/EdgeListReader.hpp>
 #include <networkit/io/METISGraphReader.hpp>
-#include <networkit/isomorphism/VF2.hpp>
 #include <networkit/isomorphism/SubgraphIsomorphism.hpp>
+#include <networkit/isomorphism/VF2.hpp>
+
 #include "../SearchGraph.hpp"
 
 namespace NetworKit {
@@ -29,10 +30,9 @@ TEST_F(SearchGraphGTest, testSearchGraphBasicFuncs) {
 
     IsomorphismDetails::SearchGraph SG = IsomorphismDetails::SearchGraph(G, false);
 
-    EXPECT_EQ(SG.numberOfNodes(),8);
-    EXPECT_EQ(SG.upperNodeIdBound(),10);
-    EXPECT_EQ(SG.isDirected(),true);
-
+    EXPECT_EQ(SG.numberOfNodes(), 8);
+    EXPECT_EQ(SG.upperNodeIdBound(), 10);
+    EXPECT_EQ(SG.isDirected(), true);
 }
 
 TEST_F(SearchGraphGTest, testSearchGraphCSRUndirected) {
@@ -56,12 +56,11 @@ TEST_F(SearchGraphGTest, testSearchGraphCSRUndirected) {
 
     // Check inDegrees = outDegrees, even nodes never have incident edges so none should be found
     G.forNodes([&](node u) {
-        EXPECT_EQ(SG.inDegree(u),G.degreeIn(u));
-        EXPECT_EQ(SG.outDegree(u),G.degreeOut(u));
-        EXPECT_EQ(SG.outDegree(u),SG.inDegree(u));
+        EXPECT_EQ(SG.inDegree(u), G.degreeIn(u));
+        EXPECT_EQ(SG.outDegree(u), G.degreeOut(u));
+        EXPECT_EQ(SG.outDegree(u), SG.inDegree(u));
         if (u % 2 == 0) {
-            for (node v = 0; v < G.upperNodeIdBound(); v++)
-            {
+            for (node v = 0; v < G.upperNodeIdBound(); v++) {
                 EXPECT_FALSE(SG.hasEdge(u, v));
                 EXPECT_FALSE(SG.hasEdge(v, u));
             }
@@ -75,10 +74,10 @@ TEST_F(SearchGraphGTest, testSearchGraphCSRUndirected) {
     });
 
     // Check in and out slice for node 5
-    EXPECT_EQ(std::vector<node>(SG.inBegin(5), SG.inEnd(5)),(std::vector<node>{1, 3, 5, 7, 9}));
-    EXPECT_EQ(std::vector<node>(SG.outBegin(5), SG.outEnd(5)),(std::vector<node>{1, 3, 5, 7, 9}));
-    EXPECT_EQ(std::vector<node>(SG.inBegin(5), SG.inEnd(5)),std::vector<node>(SG.outBegin(5), SG.outEnd(5)));
-
+    EXPECT_EQ(std::vector<node>(SG.inBegin(5), SG.inEnd(5)), (std::vector<node>{1, 3, 5, 7, 9}));
+    EXPECT_EQ(std::vector<node>(SG.outBegin(5), SG.outEnd(5)), (std::vector<node>{1, 3, 5, 7, 9}));
+    EXPECT_EQ(std::vector<node>(SG.inBegin(5), SG.inEnd(5)),
+              std::vector<node>(SG.outBegin(5), SG.outEnd(5)));
 }
 
 TEST_F(SearchGraphGTest, testSearchGraphCSRDirected) {
@@ -101,19 +100,18 @@ TEST_F(SearchGraphGTest, testSearchGraphCSRDirected) {
 
     // Check inDegrees and outDegrees
     G.forNodes([&](node u) {
-        EXPECT_EQ(SG.inDegree(u),G.degreeIn(u));
-        EXPECT_EQ(SG.outDegree(u),G.degreeOut(u));
+        EXPECT_EQ(SG.inDegree(u), G.degreeIn(u));
+        EXPECT_EQ(SG.outDegree(u), G.degreeOut(u));
     });
 
-    EXPECT_NE(SG.inDegree(0),SG.outDegree(0));
+    EXPECT_NE(SG.inDegree(0), SG.outDegree(0));
 
     // All present edges must be found, explicitly check self loop at node 0
     G.forEdges([&](node u, node v) {
         EXPECT_TRUE(SG.hasEdge(u, v));
-        if (u != v){
+        if (u != v) {
             EXPECT_FALSE(SG.hasEdge(v, u));
-        }
-        else{
+        } else {
             EXPECT_TRUE(SG.hasEdge(v, u));
         }
     });
@@ -124,15 +122,14 @@ TEST_F(SearchGraphGTest, testSearchGraphCSRDirected) {
     EXPECT_FALSE(SG.hasEdge(0, 5));
 
     // Check in and out slices
-    EXPECT_EQ(std::vector<node>(SG.inBegin(0), SG.inEnd(0)),(std::vector<node>{0}));
-    EXPECT_EQ(std::vector<node>(SG.outBegin(0), SG.outEnd(0)),(std::vector<node>{0, 1, 2, 3}));
-    EXPECT_EQ(std::vector<node>(SG.inBegin(1), SG.inEnd(1)),(std::vector<node>{0}));
-    EXPECT_EQ(std::vector<node>(SG.outBegin(1), SG.outEnd(1)),(std::vector<node>{}));
+    EXPECT_EQ(std::vector<node>(SG.inBegin(0), SG.inEnd(0)), (std::vector<node>{0}));
+    EXPECT_EQ(std::vector<node>(SG.outBegin(0), SG.outEnd(0)), (std::vector<node>{0, 1, 2, 3}));
+    EXPECT_EQ(std::vector<node>(SG.inBegin(1), SG.inEnd(1)), (std::vector<node>{0}));
+    EXPECT_EQ(std::vector<node>(SG.outBegin(1), SG.outEnd(1)), (std::vector<node>{}));
 
     // Deleted or isolated nodes have empty slice
     EXPECT_EQ(SG.inBegin(4), SG.inEnd(4));
     EXPECT_EQ(SG.inBegin(6), SG.inEnd(6));
-
 }
 
 TEST_F(SearchGraphGTest, testSearchGraphAdjMatrix) {
@@ -160,8 +157,7 @@ TEST_F(SearchGraphGTest, testSearchGraphAdjMatrix) {
     // Non-present edges must not be found
     G.forNodes([&](node u) {
         if ((u != 1) && (u != 7) && (u != 20) && (u != 42) && (u != 50) && (u != 74)) {
-            for (node v = 0; v < G.upperNodeIdBound(); v++)
-            {
+            for (node v = 0; v < G.upperNodeIdBound(); v++) {
                 EXPECT_FALSE(SG.hasEdge(u, v));
                 EXPECT_FALSE(SG.hasEdge(v, u));
             }
@@ -178,7 +174,6 @@ TEST_F(SearchGraphGTest, testSearchGraphAdjMatrix) {
         EXPECT_TRUE(SH.hasEdge(u, v));
         EXPECT_TRUE(SH.hasEdge(v, u));
     });
-
 }
 
 TEST_F(SearchGraphGTest, testCSRAdjEqualBehaviour) {
@@ -191,10 +186,9 @@ TEST_F(SearchGraphGTest, testCSRAdjEqualBehaviour) {
 
     for (node u = 0; u < G.upperNodeIdBound(); u++) {
         for (node v = 0; v < G.upperNodeIdBound(); v++) {
-            EXPECT_EQ(S_CSR.hasEdge(u, v),S_Adj.hasEdge(u, v));
+            EXPECT_EQ(S_CSR.hasEdge(u, v), S_Adj.hasEdge(u, v));
         }
     }
-
 }
 
 } // namespace NetworKit

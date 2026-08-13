@@ -6,9 +6,9 @@
 #include <cstdint>
 #include <vector>
 
+#include <tlx/math/div_ceil.hpp>
 #include <networkit/Globals.hpp>
 #include <networkit/graph/Graph.hpp>
-#include <tlx/math/div_ceil.hpp>
 
 namespace NetworKit {
 namespace IsomorphismDetails {
@@ -97,6 +97,9 @@ public:
      * Constant time when the snapshot was built with the adjacency matrix, otherwise a binary
      * search over the sorted out-neighbours of @a u. Either way this is safe to call from an
      * inner loop, unlike `Graph::hasEdge()`.
+     *
+     * Both @a u and @a v must be below @ref upperNodeIdBound(); a node that was *removed* from
+     * @a G is fine and simply has no edges, but an id beyond the bound is undefined.
      */
     bool hasEdge(node u, node v) const noexcept;
 
@@ -104,42 +107,31 @@ private:
     /**
      * Fill outFirst/outHead, and inFirst/inHead when the graph is directed.
      *
-     * TODO: implement.
-     *  1. Size outFirst to z + 1 and count the out-degree of every node into it, then turn those
-     *     counts into start offsets with a prefix sum. Nodes that do not exist get a degree of 0,
-     *     which leaves them with an empty slice - that is intentional and means callers do not
-     *     have to check hasNode().
-     *  2. Walk the edges a second time and place each neighbour into its node's slice.
-     *  3. Sort each slice ascending. hasEdge() and the neighbourhood intersections rely on this.
-     *  4. Repeat for the in-edges if the graph is directed; skip it otherwise, since inBegin()
-     *     and friends fall back to the out-arrays.
+     * Counts degrees into the offset array, prefix-sums it into start offsets, scatters the
+     * neighbours, then sorts each slice.
      *
      * Reuse: NetworKit has no CSR graph class to inherit from, so this has to be written, but the
-     * count/prefix-sum/scatter shape is established in the repo. ParallelPartitionCoarsening.cpp
-     * has the tidiest version, where one std::partial_sum over an offset array biased by two
-     * serves as both the offsets and the fill cursor. MaximalCliques.cpp keeps its own CSR under
-     * the same firstOut/head names used here and is worth a look for how it is consumed.
+     * count/prefix-sum/scatter shape is established in the repo - see
+     * ParallelPartitionCoarsening.cpp, and MaximalCliques.cpp for a CSR kept under the same
+     * firstOut/head names used here.
      *
      * Two things that look like shortcuts and are not: Graph::sortEdges() would sort the input in
-     * place, but it mutates the caller's graph and temporarily doubles its memory, so step 3 has
-     * to sort this snapshot's own slices. And CSRGeneralMatrix::adjacencyMatrix() really is a
-     * sorted CSR, but it stores a double per entry with algebraic semantics, which is far more
-     * machinery than a boolean neighbour list needs.
+     * place, but it mutates the caller's graph and allocates a full parallel copy of the whole
+     * adjacency structure, so the sort has to run on this snapshot's own slices. And
+     * CSRGeneralMatrix::adjacencyMatrix() really is a sorted CSR, but it stores a double per
+     * entry with algebraic semantics, which is far more machinery than a boolean neighbour list
+     * needs.
      */
     void buildCSR(const Graph &G);
 
     /**
-     * Fill the bit-packed adjacency matrix.
-     *
-     * TODO: implement.
-     *  1. Set matrixStride to the number of 64-bit words per row, i.e. (z + 63) / 64, and size
-     *     `matrix` to z * matrixStride words, zero-initialized.
-     *  2. For every edge u -> v set bit v of row u; for an undirected graph set both directions
-     *     so that hasEdge() does not have to normalize its arguments.
+     * Fill the bit-packed adjacency matrix: matrixStride 64-bit words per row, bit v of row u set
+     * iff the edge u -> v exists. For an undirected graph both directions are set, so hasEdge()
+     * never has to normalize the order of its arguments.
      *
      * Reuse: `tlx::div_ceil(z, 64)` from tlx/math/div_ceil.hpp expresses the stride with the
      * intent visible. Beyond that there is nothing to reuse - NetworKit has no bitset abstraction
-     * and does not use std::bitset anywhere, so the masking is written by hand as above.
+     * and does not use std::bitset anywhere, so the masking is written by hand.
      */
     void buildAdjacencyMatrix(const Graph &G);
 
