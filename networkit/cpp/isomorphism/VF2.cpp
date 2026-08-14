@@ -7,12 +7,14 @@
 #include <networkit/auxiliary/SignalHandling.hpp>
 #include <networkit/isomorphism/VF2.hpp>
 
+#include "MatchReporter.hpp"
 #include "SearchGraph.hpp"
 
 namespace NetworKit {
 
 namespace {
 
+using IsomorphismDetails::MatchReporter;
 using IsomorphismDetails::SearchGraph;
 
 /**
@@ -46,18 +48,18 @@ public:
      * @param targetLabels Empty when the search is unlabelled.
      * @param semantics Whether matches must be induced.
      * @param handler Polled so a long search can be stopped with CTRL+C.
-     * @param sink Where complete mappings are reported. VF2 is sequential, so this is sink(0).
+     * @param report Where complete mappings are reported.
      */
     VF2Impl(const Graph &pattern, const Graph &target, const std::vector<index> &patternLabels,
             const std::vector<index> &targetLabels, SubgraphIsomorphism::Semantics semantics,
-            Aux::SignalHandler &handler, SubgraphIsomorphism::MatchSink sink)
+            Aux::SignalHandler &handler, MatchReporter report)
         : patternGraph(pattern, /* buildMatrix = */ true),
           targetGraph(target, /* buildMatrix = */ false), patternLabels(&patternLabels),
           targetLabels(&targetLabels), labelled(!patternLabels.empty()), semantics(semantics),
-          handler(&handler), sink(sink), t1in(0), t1out(0), t2in(0), t2out(0) {}
+          handler(&handler), report(std::move(report)), t1in(0), t1out(0), t2in(0), t2out(0) {}
 
     /**
-     * Search for every match and report each one to the sink.
+     * Search for every match and report each one.
      *
      * TODO: implement.
      *  1. Size core1/core2 to the two upper node id bounds and fill them with `none`; size
@@ -71,7 +73,7 @@ public:
     void run() {
         // TODO: remove once implemented.
         tlx::unused(patternGraph, targetGraph, patternLabels, targetLabels, labelled, semantics,
-                    handler, sink, core1, core2, in1, out1, in2, out2, t1in, t1out, t2in, t2out,
+                    handler, report, core1, core2, in1, out1, in2, out2, t1in, t1out, t2in, t2out,
                     mapping);
         throw std::logic_error("VF2Impl::run() is not implemented yet");
     }
@@ -225,10 +227,10 @@ private:
     }
 
     /**
-     * Hand a complete mapping to the sink.
+     * Hand a complete mapping over.
      *
      * TODO: implement. Copy core1 into `mapping` for the pattern nodes that exist, then return
-     * sink.report(mapping). Reuse the same buffer every time; the sink copies it if it needs to.
+     * report(mapping). Reuse the same buffer every time; the reporter copies it if it needs to.
      */
     bool reportMapping() { throw std::logic_error("VF2Impl::reportMapping() is not implemented"); }
 
@@ -246,7 +248,7 @@ private:
     /// parallel search has to do instead.
     Aux::SignalHandler *handler;
 
-    SubgraphIsomorphism::MatchSink sink;
+    MatchReporter report;
 
     /// core1[patternNode] = target node it is mapped to, or `none`.
     std::vector<node> core1;
@@ -258,7 +260,7 @@ private:
     /// Current sizes of the four terminal sets.
     count t1in, t1out, t2in, t2out;
 
-    /// Reused buffer handed to the sink, so a match costs no allocation.
+    /// Reused buffer handed to the reporter, so a match costs no allocation.
     std::vector<node> mapping;
 };
 
@@ -270,7 +272,9 @@ VF2::VF2(const Graph &pattern, const Graph &target, Semantics semantics, count m
 void VF2::run() {
     Aux::SignalHandler handler;
     prepareRun();
-    VF2Impl(*pattern, *target, patternLabels, targetLabels, semantics, handler, sink()).run();
+    VF2Impl(*pattern, *target, patternLabels, targetLabels, semantics, handler,
+            [this](const std::vector<node> &match) { return reportMatch(match); })
+        .run();
     finishRun();
 }
 

@@ -1,9 +1,9 @@
 #ifndef NETWORKIT_ISOMORPHISM_SUBGRAPH_ISOMORPHISM_HPP_
 #define NETWORKIT_ISOMORPHISM_SUBGRAPH_ISOMORPHISM_HPP_
 
-#include <atomic>
 #include <cstdint>
 #include <functional>
+#include <mutex>
 #include <vector>
 
 #include <networkit/Globals.hpp>
@@ -130,10 +130,10 @@ public:
      * The argument is the mapping indexed by pattern node, exactly what @ref getMatches() would
      * have stored.
      *
-     * This form is **never called from two threads at once**, not even by @ref ParallelRI, so it
-     * needs no locking of its own. The price is that it becomes a bottleneck: a parallel search
-     * cannot go faster than this callback runs. If that matters, use @ref ParallelMatchCallback
-     * instead.
+     * This form is **never called from two threads at once**, not even by @ref ParallelRI, which
+     * serializes it behind a lock; it needs no locking of its own. The price is that it becomes a
+     * bottleneck: a parallel search cannot go faster than this callback runs. If that matters, use
+     * @ref ParallelMatchCallback instead.
      *
      * The reference points at an internal buffer that is reused for the next match. Copy the
      * vector if you need to keep it.
@@ -160,96 +160,6 @@ public:
      * The reference points at an internal buffer that is reused for the next match.
      */
     using ParallelMatchCallback = std::function<void(index, const std::vector<node> &)>;
-
-    /**
-     * Handle through which a running search records the matches it finds.
-     *
-     * You cannot create one - only the algorithm can, via the protected `sink()`. It is public
-     * only so that the search implementation classes, which live in the `.cpp` files and are not
-     * subclasses, can hold one. If you are just *using* these algorithms, ignore this type.
-     *
-     * ### Why it exists
-     *
-     * The obvious design is one shared result vector that every worker appends to under a lock.
-     * That would put a lock in the innermost loop of three algorithms that are not even parallel.
-     * Instead the algorithm keeps one padded slot per worker, and this handle is bound to exactly
-     * one of those slots. Recording a match therefore writes only to memory that no other thread
-     * touches: no lock, no shared cache line, and no atomic operation at all unless a cap on the
-     * number of matches was requested. The slots are merged once, after the workers have joined.
-     *
-     * A handle is only valid between `prepareRun()` and `finishRun()`.
-     */
-    class MatchSink {
-
-    public:
-        /**
-         * Record one match.
-         *
-         * @param match The mapping, indexed by pattern node. Copied if it is being stored.
-         * @return true to keep searching, false once the requested number of matches is reached.
-         *         A search must stop as soon as this returns false.
-         */
-        bool report(const std::vector<node> &match) {
-            WorkerSlot &slot = owner->slots[tid];
-            ++slot.found;
-
-            if (owner->parallelCallback)
-                owner->parallelCallback(tid, match);
-            else if (owner->callback)
-                owner->callback(match);
-            else if (owner->storeMatches)
-                slot.buffer.push_back(match);
-
-            if (owner->maxMatches == 0)
-                return true;
-
-            // A lone worker knows the global count exactly, so it needs no coordination at all.
-            if (owner->slots.size() == 1)
-                return slot.found < owner->maxMatches;
-
-            // Several workers: tell the others how far we have got, but only every so often, and
-            // otherwise just read the flag they set when the cap is reached. The read is a plain
-            // load from a cache line nobody writes to, so it is effectively free.
-            if (--slot.untilPublish == 0) {
-                slot.untilPublish = owner->publishInterval;
-                const count total =
-                    owner->published.fetch_add(owner->publishInterval, std::memory_order_relaxed)
-                    + owner->publishInterval;
-                if (total >= owner->maxMatches) {
-                    owner->capReached.store(true, std::memory_order_relaxed);
-                    return false;
-                }
-            }
-
-            return !owner->capReached.load(std::memory_order_relaxed);
-        }
-
-        /**
-         * How many more matches this worker may record, or @ref none if there is no cap.
-         *
-         * Exact for a single worker, an over-estimate when several are running. Use it to size a
-         * `reserve()`; do **not** use it to decide when to stop, that is what the return value of
-         * @ref report() is for.
-         */
-        count remaining() const noexcept {
-            if (owner->maxMatches == 0)
-                return none;
-
-            const count found = owner->slots.size() == 1
-                                    ? owner->slots[tid].found
-                                    : owner->published.load(std::memory_order_relaxed);
-
-            return found >= owner->maxMatches ? 0 : owner->maxMatches - found;
-        }
-
-    private:
-        friend class SubgraphIsomorphism;
-
-        MatchSink(SubgraphIsomorphism &owner, index tid) noexcept : owner(&owner), tid(tid) {}
-
-        SubgraphIsomorphism *owner;
-        index tid;
-    };
 
     ~SubgraphIsomorphism() override = default;
 
@@ -380,21 +290,26 @@ protected:
     // ---------------------------------------------------------------------------------------
     // Everything below is for people implementing a new algorithm in this module.
     //
-    // The protocol a run() implementation must follow:
+    // The protocol a *sequential* run() must follow - VF2, VF3 and RI all look like this:
     //
-    //   1. Call prepareRun(numWorkers). This throws away the results of any earlier run and
-    //      allocates one slot per worker. Sequential algorithms pass nothing and get one slot.
-    //   2. Get a MatchSink for each worker with sink(tid). Do this *before* starting any
-    //      threads, and give each worker exactly one handle.
-    //   3. Search. Whenever a complete mapping is found, call MatchSink::report() on that
-    //      worker's own handle. Stop that worker as soon as report() returns false.
-    //      Never touch the algorithm object itself from a worker thread.
-    //   4. After the workers have joined, call finishRun(). It merges the slots, applies the
-    //      cap, and marks the algorithm as finished.
+    //   1. Call prepareRun(), which throws away the results of any earlier run.
+    //   2. Search. Whenever a complete mapping is found, call reportMatch(). Stop as soon as it
+    //      returns false; that is how the cap on the number of matches is honoured.
+    //   3. Call finishRun(). It applies the cap and marks the run finished.
     //
-    // Use isLabelled() to find out whether labels are in play, and hasSerialCallback() to find
-    // out whether the user's callback must not be called concurrently - if it must not, wrap the
-    // report() call in a critical section.
+    // A *parallel* run() cannot use reportMatch(), which counts and stores without any locking
+    // and is therefore single-threaded only. It instead does its own accumulation, which it
+    // needs per-worker state for anyway, and hands the merged output over at the end:
+    //
+    //   1. Call prepareRun().
+    //   2. Search. On a complete mapping call invokeCallback(tid, match) - that part *is*
+    //      thread-safe - and, if it returns false and storesMatches() says so, append the match
+    //      to that worker's own buffer. Count and coordinate the cap privately.
+    //   3. After the workers have joined, call finishRun(mergedMatches, totalFound).
+    //
+    // ParallelRI.cpp is the worked example: its workers already own a padded slot each, so the
+    // buffers and counters go there rather than into this class, where three sequential
+    // algorithms would pay for machinery they never use.
     //
     // Interruption works exactly as it does everywhere else in NetworKit, with no machinery of
     // this module's own: hold an `Aux::SignalHandler` local to run() and call assureRunning() on
@@ -403,8 +318,12 @@ protected:
     // exception escaping an OpenMP structured block is undefined behaviour - see Betweenness.cpp,
     // which is the pattern to copy.
     //
+    // Use isLabelled() to find out whether labels are in play.
+    //
     // The search itself belongs in a separate implementation class in the .cpp file, so that the
-    // public header never grows a member. See VF2.cpp for the pattern.
+    // public header never grows a member. Those classes are not subclasses and so cannot reach
+    // anything here: give them an IsomorphismDetails::MatchReporter built from a lambda in
+    // run(), which can. See VF2.cpp for the pattern.
     // ---------------------------------------------------------------------------------------
 
     /**
@@ -429,29 +348,81 @@ protected:
     }
 
     /**
-     * @return true if the user's callback must not be called from two threads at once, in which
-     * case a parallel search has to serialize its @ref MatchSink::report() calls.
+     * @return true if the user's callback must not be called from two threads at once. Handled
+     * by @ref invokeCallback(); exposed for algorithms that want to decide something else on it.
      */
     bool hasSerialCallback() const noexcept { return static_cast<bool>(callback); }
 
     /**
-     * Step 1 of the protocol: forget the previous run and allocate the per-worker slots.
-     *
-     * @param numWorkers How many workers will report concurrently. 0 is treated as 1.
+     * @return true if a search has to keep the matches it finds, rather than only count them.
+     * False when a callback is set, since a callback already means nothing is stored.
      */
-    void prepareRun(count numWorkers = 1);
+    bool storesMatches() const noexcept { return storeMatches && !hasCallback(); }
 
     /**
-     * Step 2 of the protocol: the handle worker @a tid records its matches through.
-     *
-     * @param tid Worker id in `[0, numWorkers)`, matching what was passed to @ref prepareRun().
+     * Step 1 of the protocol: forget the results of any earlier run.
      */
-    MatchSink sink(index tid = 0) noexcept { return MatchSink(*this, tid); }
+    void prepareRun();
 
     /**
-     * Step 4 of the protocol: merge the worker slots, apply the cap, mark the run as finished.
+     * Record one match, for a sequential search.
+     *
+     * Hands the match to the callback if one was set, stores it otherwise, and counts it.
+     *
+     * Does no locking and touches plain members, so it must not be called from more than one
+     * thread. A parallel search uses @ref invokeCallback() and its own buffers instead.
+     *
+     * @param match The mapping, indexed by pattern node. Copied if it is being stored.
+     * @return true to keep searching, false once the requested number of matches is reached. A
+     *         search must stop as soon as this returns false.
+     */
+    bool reportMatch(const std::vector<node> &match);
+
+    /**
+     * How many more matches a sequential search may report, or @ref none if there is no cap.
+     *
+     * Use it to size a `reserve()`; do **not** use it to decide when to stop, that is what the
+     * return value of @ref reportMatch() is for.
+     */
+    count remainingMatches() const noexcept {
+        if (maxMatches == 0)
+            return none;
+        return matchCount >= maxMatches ? 0 : maxMatches - matchCount;
+    }
+
+    /**
+     * Hand one match to the user's callback, from any thread.
+     *
+     * This is the part of reporting a parallel search cannot do for itself, because a
+     * @ref MatchCallback promises never to be entered twice at once and the reporting call sits
+     * deep inside the search, far from the code that knows how many threads are running. A
+     * @ref ParallelMatchCallback is invoked directly with @a tid; a @ref MatchCallback is invoked
+     * under a lock.
+     *
+     * Counting and storing are deliberately *not* done here: a parallel search keeps those
+     * per-worker, so that the common case touches no memory another thread writes to.
+     *
+     * @param tid Worker id in `[0, numberOfWorkers())`.
+     * @param match The mapping, indexed by pattern node.
+     * @return true if a callback consumed the match, in which case the caller must not store it.
+     */
+    bool invokeCallback(index tid, const std::vector<node> &match);
+
+    /**
+     * Step 3 of the protocol, sequential: apply the cap and mark the run as finished.
      */
     void finishRun();
+
+    /**
+     * Step 3 of the protocol, parallel: adopt the merged per-worker output, apply the cap, mark
+     * the run as finished.
+     *
+     * Call once, after every worker has joined.
+     *
+     * @param matches The workers' buffers concatenated. Empty when nothing was stored.
+     * @param found How many matches were reported in total, stored or not.
+     */
+    void finishRun(std::vector<std::vector<node>> &&matches, count found);
 
     /// The graph we are looking for. Never null, never modified.
     const Graph *pattern;
@@ -479,24 +450,13 @@ private:
      */
     void validateInput() const;
 
-    /// One per worker. Padded so two workers never write to the same cache line.
-    struct alignas(64) WorkerSlot {
-        std::vector<std::vector<node>> buffer;
-        count found = 0;
-        /// Counts down to the next publication of `found`; only used when maxMatches != 0.
-        count untilPublish = 0;
-    };
-
-    std::vector<WorkerSlot> slots;
     std::vector<std::vector<node>> result;
 
     MatchCallback callback;
     ParallelMatchCallback parallelCallback;
 
-    /// Only touched when maxMatches != 0 and more than one worker is reporting.
-    std::atomic<count> published{0};
-    std::atomic<bool> capReached{false};
-    count publishInterval;
+    /// Guards `callback` in invokeCallback(), which only a parallel search calls.
+    std::mutex reportMutex;
 
     count matchCount;
     bool storeMatches;

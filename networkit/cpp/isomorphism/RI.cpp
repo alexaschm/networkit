@@ -28,7 +28,7 @@ void RI::run() {
         RIImpl::computeOrdering(patternGraph, targetGraph, patternLabels, targetLabels, variant);
 
     RIImpl(patternGraph, targetGraph, patternLabels, targetLabels, ordering, semantics, variant,
-           handler, sink())
+           handler, [this](const std::vector<node> &match) { return reportMatch(match); })
         .run();
 
     finishRun();

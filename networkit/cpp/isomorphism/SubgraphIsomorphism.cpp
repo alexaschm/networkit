@@ -1,4 +1,4 @@
-#include <algorithm>
+#include <mutex>
 #include <stdexcept>
 #include <utility>
 
@@ -43,17 +43,10 @@
 
 namespace NetworKit {
 
-namespace {
-/// Upper bound on how many matches a worker records between two publications of its local count.
-constexpr count MaxPublishInterval = 64;
-/// How many publication rounds per worker to aim for, bounding the overshoot past maxMatches.
-constexpr count PublishRounds = 8;
-} // namespace
-
 SubgraphIsomorphism::SubgraphIsomorphism(const Graph &pattern, const Graph &target,
                                          Semantics semantics, count maxMatches)
     : Algorithm(), pattern(&pattern), target(&target), semantics(semantics), maxMatches(maxMatches),
-      publishInterval(0), matchCount(0), storeMatches(true) {
+      matchCount(0), storeMatches(true) {
     validateInput();
 }
 
@@ -102,51 +95,59 @@ void SubgraphIsomorphism::setStoreMatches(bool storeMatches) {
     this->storeMatches = storeMatches;
 }
 
-void SubgraphIsomorphism::prepareRun(count numWorkers) {
+void SubgraphIsomorphism::prepareRun() {
     hasRun = false;
-
-    if (numWorkers == 0)
-        numWorkers = 1;
 
     result.clear();
     result.shrink_to_fit();
-    slots.assign(numWorkers, WorkerSlot{});
 
     matchCount = 0;
-    published.store(0, std::memory_order_relaxed);
-    capReached.store(false, std::memory_order_relaxed);
+}
 
-    // Publish often enough that the workers overshoot maxMatches only slightly, but rarely
-    // enough that a large enumeration performs no atomic operations worth speaking of. A single
-    // worker never publishes at all - it knows the global count itself.
-    publishInterval =
-        maxMatches == 0
-            ? 0
-            : std::max<count>(1, std::min<count>(MaxPublishInterval,
-                                                 maxMatches / (numWorkers * PublishRounds)));
+bool SubgraphIsomorphism::reportMatch(const std::vector<node> &match) {
+    ++matchCount;
 
-    for (WorkerSlot &slot : slots)
-        slot.untilPublish = publishInterval;
+    // Single-threaded, so the serial callback needs no lock and the parallel one is simply told
+    // it is worker 0. Both forms therefore work unchanged with a sequential algorithm.
+    if (parallelCallback)
+        parallelCallback(0, match);
+    else if (callback)
+        callback(match);
+    else if (storeMatches)
+        result.push_back(match);
+
+    return maxMatches == 0 || matchCount < maxMatches;
+}
+
+bool SubgraphIsomorphism::invokeCallback(index tid, const std::vector<node> &match) {
+    if (parallelCallback) {
+        parallelCallback(tid, match);
+        return true;
+    }
+
+    if (callback) {
+        // A MatchCallback promises never to be entered twice at once. Honouring it here rather
+        // than in each parallel algorithm is what makes the promise true: the reporting call sits
+        // deep inside a search's recursion, far from the code that knows how many threads are
+        // running. Only a parallel search reaches this, so no sequential one pays for the lock.
+        const std::lock_guard<std::mutex> guard(reportMutex);
+        callback(match);
+        return true;
+    }
+
+    return false;
 }
 
 void SubgraphIsomorphism::finishRun() {
-    matchCount = 0;
-    for (const WorkerSlot &slot : slots)
-        matchCount += slot.found;
+    // A sequential search stops the moment reportMatch() returns false, so the cap already holds
+    // exactly. Nothing to trim.
+    hasRun = true;
+}
 
-    if (!hasCallback() && storeMatches) {
-        count stored = 0;
-        for (const WorkerSlot &slot : slots)
-            stored += slot.buffer.size();
-
-        result.reserve(stored);
-        for (WorkerSlot &slot : slots) {
-            for (std::vector<node> &match : slot.buffer)
-                result.push_back(std::move(match));
-            slot.buffer.clear();
-            slot.buffer.shrink_to_fit();
-        }
-    }
+void SubgraphIsomorphism::finishRun(std::vector<std::vector<node>> &&matches, count found) {
+    matchCount = found;
+    if (!hasCallback() && storeMatches)
+        result = std::move(matches);
 
     // Workers may overshoot the cap slightly before they all observe it. Nothing was handed to
     // the caller yet unless a callback is in use, so everything but the callback stays exact.

@@ -1,4 +1,5 @@
 #include <stdexcept>
+#include <utility>
 
 #include <tlx/unused.hpp>
 
@@ -18,16 +19,15 @@ RIImpl::Ordering RIImpl::computeOrdering(const SearchGraph &pattern, const Searc
 RIImpl::RIImpl(const SearchGraph &pattern, const SearchGraph &target,
                const std::vector<index> &patternLabels, const std::vector<index> &targetLabels,
                const Ordering &ordering, SubgraphIsomorphism::Semantics semantics,
-               RI::Variant variant, Aux::SignalHandler &handler,
-               SubgraphIsomorphism::MatchSink sink)
+               RI::Variant variant, Aux::SignalHandler &handler, MatchReporter report)
     : patternGraph(&pattern), targetGraph(&target), patternLabels(&patternLabels),
       targetLabels(&targetLabels), labelled(!patternLabels.empty()), ordering(&ordering),
-      semantics(semantics), variant(variant), handler(&handler), sink(sink) {}
+      semantics(semantics), variant(variant), handler(&handler), report(std::move(report)) {}
 
 void RIImpl::run() {
     // TODO: remove once implemented.
     tlx::unused(patternGraph, targetGraph, patternLabels, targetLabels, labelled, ordering,
-                semantics, variant, handler, sink, domains, matchBuffer, candidateBuffer);
+                semantics, variant, handler, report, domains, matchBuffer, candidateBuffer);
     throw std::logic_error("RIImpl::run() is not implemented yet");
 }
 

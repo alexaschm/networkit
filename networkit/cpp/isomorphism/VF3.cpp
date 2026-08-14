@@ -7,12 +7,14 @@
 #include <networkit/auxiliary/SignalHandling.hpp>
 #include <networkit/isomorphism/VF3.hpp>
 
+#include "MatchReporter.hpp"
 #include "SearchGraph.hpp"
 
 namespace NetworKit {
 
 namespace {
 
+using IsomorphismDetails::MatchReporter;
 using IsomorphismDetails::SearchGraph;
 
 /**
@@ -47,18 +49,18 @@ public:
      * @param targetLabels Empty when the search is unlabelled.
      * @param semantics Whether matches must be induced.
      * @param handler Polled so a long search can be stopped with CTRL+C.
-     * @param sink Where complete mappings are reported. VF3 is sequential, so this is sink(0).
+     * @param report Where complete mappings are reported.
      */
     VF3Impl(const Graph &pattern, const Graph &target, const std::vector<index> &patternLabels,
             const std::vector<index> &targetLabels, SubgraphIsomorphism::Semantics semantics,
-            Aux::SignalHandler &handler, SubgraphIsomorphism::MatchSink sink)
+            Aux::SignalHandler &handler, MatchReporter report)
         : patternGraph(pattern, /* buildMatrix = */ true),
           targetGraph(target, /* buildMatrix = */ false), patternLabels(&patternLabels),
           targetLabels(&targetLabels), labelled(!patternLabels.empty()), semantics(semantics),
-          handler(&handler), sink(sink), numberOfClasses(0) {}
+          handler(&handler), report(std::move(report)), numberOfClasses(0) {}
 
     /**
-     * Search for every match and report each one to the sink.
+     * Search for every match and report each one.
      *
      * TODO: implement.
      *  1. classifyNodes(), then computeNodeOrder(), then precomputeFeasibilitySets(). In that
@@ -71,7 +73,7 @@ public:
     void run() {
         // TODO: remove once implemented.
         tlx::unused(patternGraph, targetGraph, patternLabels, targetLabels, labelled, semantics,
-                    handler, sink, patternClass, targetClass, targetClassSize, numberOfClasses,
+                    handler, report, patternClass, targetClass, targetClassSize, numberOfClasses,
                     order, orderParent, feasibilitySets, core1, core2, mapping);
         throw std::logic_error("VF3Impl::run() is not implemented yet");
     }
@@ -135,7 +137,7 @@ private:
      *
      * TODO: implement.
      *  1. If @a depth equals the number of pattern nodes, report the mapping and return the
-     *     sink's answer so a false stops the whole search.
+     *     reporter's answer so a false stops the whole search.
      *  2. Otherwise get the candidates for this depth, and for each one test feasible(), then
      *     addPair(), recurse, removePair(). Propagate a false upward at once.
      *
@@ -235,9 +237,9 @@ private:
     }
 
     /**
-     * Hand a complete mapping to the sink.
+     * Hand a complete mapping over.
      *
-     * TODO: implement. Copy core1 into `mapping` and return sink.report(mapping). Note that
+     * TODO: implement. Copy core1 into `mapping` and return report(mapping). Note that
      * `mapping` must be indexed by pattern node, not by position in `order` - the caller of this
      * class knows nothing about the internal ordering.
      */
@@ -257,7 +259,7 @@ private:
     /// parallel search has to do instead.
     Aux::SignalHandler *handler;
 
-    SubgraphIsomorphism::MatchSink sink;
+    MatchReporter report;
 
     /// Class of every node, derived from its label. All zero when the search is unlabelled.
     std::vector<index> patternClass, targetClass;
@@ -278,7 +280,7 @@ private:
     /// core2[targetNode] = pattern node mapped onto it, or `none`.
     std::vector<node> core2;
 
-    /// Reused buffer handed to the sink, so a match costs no allocation.
+    /// Reused buffer handed to the reporter, so a match costs no allocation.
     std::vector<node> mapping;
 };
 
@@ -290,7 +292,9 @@ VF3::VF3(const Graph &pattern, const Graph &target, Semantics semantics, count m
 void VF3::run() {
     Aux::SignalHandler handler;
     prepareRun();
-    VF3Impl(*pattern, *target, patternLabels, targetLabels, semantics, handler, sink()).run();
+    VF3Impl(*pattern, *target, patternLabels, targetLabels, semantics, handler,
+            [this](const std::vector<node> &match) { return reportMatch(match); })
+        .run();
     finishRun();
 }
 

@@ -16,6 +16,7 @@
 #include <networkit/isomorphism/RI.hpp>
 #include <networkit/isomorphism/SubgraphIsomorphism.hpp>
 
+#include "MatchReporter.hpp"
 #include "SearchGraph.hpp"
 
 namespace NetworKit {
@@ -127,12 +128,12 @@ public:
      * @param handler Polled so a long search can be stopped with CTRL+C. Shared between
      *        workers; only the non-throwing isRunning() may be used, since ParallelRI runs this
      *        inside an OpenMP region.
-     * @param sink Where complete mappings go. One per worker; never shared between threads.
+     * @param report Where complete mappings go. One per worker; never shared between threads.
      */
     RIImpl(const SearchGraph &pattern, const SearchGraph &target,
            const std::vector<index> &patternLabels, const std::vector<index> &targetLabels,
            const Ordering &ordering, SubgraphIsomorphism::Semantics semantics, RI::Variant variant,
-           Aux::SignalHandler &handler, SubgraphIsomorphism::MatchSink sink);
+           Aux::SignalHandler &handler, MatchReporter report);
 
     /**
      * Run the entire search from the empty mapping. Used by @ref RI.
@@ -241,14 +242,14 @@ private:
     void initializeDomains();
 
     /**
-     * Hand a complete mapping to the sink.
+     * Hand a complete mapping over.
      *
-     * TODO: implement. `state.mapping` is indexed by position in the order, but the sink expects
-     * a vector indexed by *pattern node*, so permute it through `ordering->order` into the
-     * reusable `matchBuffer` before reporting. Getting this backwards is the easiest bug to write
-     * here and produces plausible-looking but wrong matches.
+     * TODO: implement. `state.mapping` is indexed by position in the order, but the reporter
+     * expects a vector indexed by *pattern node*, so permute it through `ordering->order` into
+     * the reusable `matchBuffer` before reporting. Getting this backwards is the easiest bug to
+     * write here and produces plausible-looking but wrong matches.
      *
-     * @return whatever the sink returned: false means stop searching.
+     * @return whatever the reporter returned: false means stop searching.
      */
     bool reportMapping(const State &state);
 
@@ -270,12 +271,12 @@ private:
     /// exception escaping one of those is undefined behaviour.
     Aux::SignalHandler *handler;
 
-    SubgraphIsomorphism::MatchSink sink;
+    MatchReporter report;
 
     /// RI_DS only: domains[i] lists the target nodes position i could map to. Empty under RI.
     std::vector<std::vector<node>> domains;
 
-    /// Reused buffer handed to the sink, indexed by pattern node.
+    /// Reused buffer handed to the reporter, indexed by pattern node.
     std::vector<node> matchBuffer;
 
     /// Scratch for candidatesFor(), reused so that expanding a state costs no allocation.

@@ -1,6 +1,9 @@
+#include <algorithm>
 #include <atomic>
 #include <deque>
+#include <functional>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 #include <tlx/unused.hpp>
@@ -20,18 +23,36 @@ namespace {
 using IsomorphismDetails::RIImpl;
 using IsomorphismDetails::SearchGraph;
 
+/// Upper bound on how many matches a worker records between two publications of its local count.
+constexpr count MaxPublishInterval = 64;
+/// How many publication rounds per worker to aim for, bounding the overshoot past maxMatches.
+constexpr count PublishRounds = 8;
+
 /**
  * The worker pool that drives one RIImpl per thread.
  *
  * ## What each worker owns
  *
- * A private deque of partial mappings, a private RIImpl to expand them with, and a private
- * MatchSink to report through. None of those are shared, so the common path - take a state off
- * my own deque, expand it, push the children back - touches no memory any other thread writes to.
+ * A private deque of partial mappings, a private RIImpl to expand them with, and a private buffer
+ * and counter for the matches it finds. None of those are shared, so the common path - take a
+ * state off my own deque, expand it, push the children back, record a match - touches no memory
+ * any other thread writes to.
  *
  * The only shared things are: the graph snapshots and the matching order, which are read-only
- * after construction; the victims' deques, touched only when stealing; and two atomics used for
+ * after construction; the victims' deques, touched only when stealing; and three atomics used for
  * stopping. That is the whole synchronization surface.
+ *
+ * ## Where the results go
+ *
+ * Reporting a match is the one place a worker has something to say to the outside world, and the
+ * naive design - one shared result vector behind a lock - would put that lock in the middle of the
+ * search. So the accumulation lives here instead, per worker, and ParallelRI::run() merges the
+ * buffers once after the join. This class is the only one in the module that needs any of it:
+ * VF2, VF3 and RI are sequential and just call SubgraphIsomorphism::reportMatch().
+ *
+ * The one part that cannot be private is the user's callback, which the caller passes in as
+ * @a deliver. It hands a match to whichever callback form was set and handles the serial form's
+ * "never entered twice at once" promise itself, so a worker just calls it and moves on.
  *
  * ## The two ends of the deque
  *
@@ -44,6 +65,10 @@ using IsomorphismDetails::SearchGraph;
 class ParallelRIImpl {
 
 public:
+    /// Hands one match to the user's callback. Thread-safe; returns true if a callback took it,
+    /// in which case this class must not store it.
+    using Deliver = std::function<bool(index, const std::vector<node> &)>;
+
     /**
      * @param patternGraph Shared read-only snapshot of the pattern.
      * @param targetGraph Shared read-only snapshot of the target.
@@ -54,42 +79,90 @@ public:
      * @param variant Plain RI or RI-DS.
      * @param handler Shared by every worker. Only its non-throwing isRunning() may be called
      *        from inside the parallel region.
-     * @param serializeCallback True when the user's callback must not run concurrently, in which
-     *        case reporting has to happen inside a critical section.
-     * @param sinks One per worker, in worker-id order. Never shared between threads.
+     * @param deliver Where the user's callback is invoked. Called from several threads at once.
+     * @param storeMatches Whether the matches have to be kept, rather than only counted.
+     * @param maxMatches Stop after this many matches; 0 means no limit.
+     * @param numWorkers How many workers to run, which is what the caller told the user to
+     *        expect from SubgraphIsomorphism::numberOfWorkers().
      */
     ParallelRIImpl(const SearchGraph &patternGraph, const SearchGraph &targetGraph,
                    const std::vector<index> &patternLabels, const std::vector<index> &targetLabels,
                    const RIImpl::Ordering &ordering, SubgraphIsomorphism::Semantics semantics,
-                   RI::Variant variant, Aux::SignalHandler &handler, bool serializeCallback,
-                   std::vector<SubgraphIsomorphism::MatchSink> sinks)
+                   RI::Variant variant, Aux::SignalHandler &handler, Deliver deliver,
+                   bool storeMatches, count maxMatches, count numWorkers)
         : patternGraph(&patternGraph), targetGraph(&targetGraph), patternLabels(&patternLabels),
           targetLabels(&targetLabels), ordering(&ordering), semantics(semantics), variant(variant),
-          handler(&handler), serializeCallback(serializeCallback), sinks(std::move(sinks)),
-          numWorkers(this->sinks.size()), stopped(false), tokenHolder(0) {}
+          handler(&handler), deliver(std::move(deliver)), storeMatches(storeMatches),
+          maxMatches(maxMatches), numWorkers(numWorkers == 0 ? 1 : numWorkers),
+          // Worker holds an atomic, so it is neither copyable nor movable and vector::resize()
+          // would not compile. vector(size_type) only needs default construction, hence here.
+          workers(this->numWorkers), stopped(false), tokenHolder(0), published(0),
+          // Publish often enough that the workers overshoot maxMatches only slightly, but rarely
+          // enough that a large enumeration performs no atomic operations worth speaking of.
+          publishInterval(
+              maxMatches == 0
+                  ? 0
+                  : std::max<count>(
+                        1, std::min<count>(MaxPublishInterval,
+                                           maxMatches / (this->numWorkers * PublishRounds)))) {
+        for (Worker &worker : workers)
+            worker.untilPublish = publishInterval;
+    }
 
     /**
      * Run the parallel search.
      *
      * TODO: implement.
-     *  1. Size `workers` to numWorkers and seed the roots with seedRoots().
+     *  1. Seed the roots with seedRoots(). `workers` is already sized by the constructor.
      *  2. Open an `omp parallel num_threads(numWorkers)` region. Inside it, give each thread its
-     *     own RIImpl built from the shared snapshots, the shared ordering and sinks[tid], then
-     *     call workerLoop(tid).
+     *     own RIImpl built from the shared snapshots, the shared ordering and a reporter bound to
+     *     that thread - `[this, tid](const std::vector<node> &m) { return recordMatch(tid, m); }` -
+     *     then call workerLoop(tid).
      *  3. That is all - the loop below handles work, stealing and termination. Do not touch the
-     *     algorithm object from inside the region; sinks[tid] is the only channel out.
+     *     algorithm object from inside the region; recordMatch() is the only channel out.
      *
-     * Reuse: `Aux::getMaxNumberOfThreads()` from networkit/auxiliary/Parallelism.hpp is already
-     * used by the caller to size `sinks`. Note that there is no Aux::getThreadId() to go with it -
+     * Reuse: `Aux::getMaxNumberOfThreads()` from networkit/auxiliary/Parallelism.hpp is what the
+     * caller sizes `numWorkers` with. Note that there is no Aux::getThreadId() to go with it -
      * the convention throughout NetworKit is a bare omp_get_thread_num() - and that loop indices
      * in an `omp for` have to be NetworKit::omp_index rather than count.
      */
     void run() {
         // TODO: remove once implemented.
         tlx::unused(patternGraph, targetGraph, patternLabels, targetLabels, ordering, semantics,
-                    variant, handler, serializeCallback, sinks, numWorkers, workers, stopped,
-                    tokenHolder);
+                    variant, handler, numWorkers, workers, stopped, tokenHolder);
         throw std::logic_error("ParallelRIImpl::run() is not implemented yet");
+    }
+
+    /**
+     * The workers' buffers concatenated. Empty when nothing was stored.
+     *
+     * Call once, after @ref run() has returned and every worker has joined.
+     */
+    std::vector<std::vector<node>> takeMatches() {
+        std::vector<std::vector<node>> merged;
+        if (!storeMatches)
+            return merged;
+
+        count total = 0;
+        for (const Worker &worker : workers)
+            total += worker.buffer.size();
+
+        merged.reserve(total);
+        for (Worker &worker : workers) {
+            for (std::vector<node> &match : worker.buffer)
+                merged.push_back(std::move(match));
+            worker.buffer.clear();
+            worker.buffer.shrink_to_fit();
+        }
+        return merged;
+    }
+
+    /// How many matches were reported in total, stored or not. Call after @ref run().
+    count matchesFound() const {
+        count total = 0;
+        for (const Worker &worker : workers)
+            total += worker.found;
+        return total;
     }
 
 private:
@@ -103,7 +176,52 @@ private:
         uint64_t rngState = 0;
         /// How many states have been expanded since the last batch was published for stealing.
         count sinceLastPublish = 0;
+        /// Matches this worker found and kept. Merged by takeMatches() after the join.
+        std::vector<std::vector<node>> buffer;
+        /// How many matches this worker reported, whether or not they were kept.
+        count found = 0;
+        /// Counts down to the next publication of `found`; only used when maxMatches != 0.
+        count untilPublish = 0;
     };
+
+    /**
+     * Record one match found by worker @a tid.
+     *
+     * This is what each worker's RIImpl reports through. Everything it touches is either that
+     * worker's own slot or, when a cap was requested, one atomic that is written only every
+     * `publishInterval` matches - so the common case performs no synchronization at all.
+     *
+     * @return true to keep searching, false once the cap has been reached.
+     */
+    bool recordMatch(index tid, const std::vector<node> &match) {
+        Worker &worker = workers[tid];
+        ++worker.found;
+
+        if (!deliver(tid, match) && storeMatches)
+            worker.buffer.push_back(match);
+
+        if (maxMatches == 0)
+            return true;
+
+        // A lone worker knows the global count exactly, so it needs no coordination at all.
+        if (numWorkers == 1)
+            return worker.found < maxMatches;
+
+        // Several workers: tell the others how far we have got, but only every so often, and
+        // otherwise just read the flag they set when the cap is reached. The read is a plain load
+        // from a cache line nobody writes to, so it is effectively free.
+        if (--worker.untilPublish == 0) {
+            worker.untilPublish = publishInterval;
+            const count total =
+                published.fetch_add(publishInterval, std::memory_order_relaxed) + publishInterval;
+            if (total >= maxMatches) {
+                stopped.store(true, std::memory_order_relaxed);
+                return false;
+            }
+        }
+
+        return !stopped.load(std::memory_order_relaxed);
+    }
 
     /**
      * Create the initial states and spread them over the workers.
@@ -246,11 +364,11 @@ private:
     /// called on it; ParallelRI::run() does the throwing assureRunning() once, after the join.
     Aux::SignalHandler *handler;
 
-    /// True when the user's callback must not be invoked concurrently.
-    bool serializeCallback;
-
-    /// One per worker, indexed by worker id.
-    std::vector<SubgraphIsomorphism::MatchSink> sinks;
+    /// Where the user's callback is invoked. Entered by several workers at once.
+    Deliver deliver;
+    bool storeMatches;
+    /// 0 means no limit.
+    count maxMatches;
     count numWorkers;
 
     std::vector<Worker> workers;
@@ -259,6 +377,12 @@ private:
     std::atomic<bool> stopped;
     /// Who currently holds the termination token.
     std::atomic<index> tokenHolder;
+
+    /// Running total of the matches the workers have published. Only touched when maxMatches != 0
+    /// and more than one worker is running.
+    std::atomic<count> published;
+    /// How many matches a worker records between two publications of its local count.
+    count publishInterval;
 };
 
 } // namespace
@@ -274,11 +398,11 @@ count ParallelRI::numberOfWorkers() const {
 void ParallelRI::run() {
     Aux::SignalHandler handler;
 
+    prepareRun();
+
     // Asked once, here, so that the number of workers the search actually runs and the number
     // numberOfWorkers() promised its caller cannot drift apart.
     const count numWorkers = numberOfWorkers();
-
-    prepareRun(numWorkers);
 
     // Built once and shared read-only by every worker.
     const SearchGraph patternGraph(*pattern, /* buildMatrix = */ true);
@@ -286,20 +410,19 @@ void ParallelRI::run() {
     const RIImpl::Ordering ordering =
         RIImpl::computeOrdering(patternGraph, targetGraph, patternLabels, targetLabels, variant);
 
-    // Every handle is taken here, on one thread, before any worker starts.
-    std::vector<MatchSink> sinks;
-    sinks.reserve(numWorkers);
-    for (index tid = 0; tid < numWorkers; ++tid)
-        sinks.push_back(sink(tid));
-
-    ParallelRIImpl(patternGraph, targetGraph, patternLabels, targetLabels, ordering, semantics,
-                   variant, handler, hasSerialCallback(), std::move(sinks))
-        .run();
+    // The lambda is what gets the workers at the user's callback: they are not subclasses and so
+    // cannot reach the protected invokeCallback() themselves, but run() can.
+    ParallelRIImpl impl(
+        patternGraph, targetGraph, patternLabels, targetLabels, ordering, semantics, variant,
+        handler,
+        [this](index tid, const std::vector<node> &match) { return invokeCallback(tid, match); },
+        storesMatches(), maxMatches, numWorkers);
+    impl.run();
 
     // Only now, with every worker joined, is it safe to let an exception out.
     handler.assureRunning();
 
-    finishRun();
+    finishRun(impl.takeMatches(), impl.matchesFound());
 }
 
 } // namespace NetworKit
