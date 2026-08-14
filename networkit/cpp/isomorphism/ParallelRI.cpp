@@ -267,10 +267,16 @@ ParallelRI::ParallelRI(const Graph &pattern, const Graph &target, RI::Variant va
                        Semantics semantics, count maxMatches)
     : SubgraphIsomorphism(pattern, target, semantics, maxMatches), variant(variant) {}
 
+count ParallelRI::numberOfWorkers() const {
+    return static_cast<count>(Aux::getMaxNumberOfThreads());
+}
+
 void ParallelRI::run() {
     Aux::SignalHandler handler;
 
-    const count numWorkers = static_cast<count>(Aux::getMaxNumberOfThreads());
+    // Asked once, here, so that the number of workers the search actually runs and the number
+    // numberOfWorkers() promised its caller cannot drift apart.
+    const count numWorkers = numberOfWorkers();
 
     prepareRun(numWorkers);
 

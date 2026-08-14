@@ -148,7 +148,7 @@ public:
      * and avoid locking entirely:
      *
      * @code
-     * std::vector<Acc> perThread(Aux::getMaxNumberOfThreads());
+     * std::vector<Acc> perThread(algo.numberOfWorkers());
      * algo.setCallback([&](index tid, const std::vector<node> &match) {
      *     perThread[tid].add(match);   // no lock needed, each tid owns its slot
      * });
@@ -263,6 +263,17 @@ public:
      * interruptible algorithm in NetworKit does, so nothing here is a special case.
      */
     void run() override = 0;
+
+    /**
+     * How many workers @ref run() will use.
+     *
+     * This is the bound the worker id handed to a @ref ParallelMatchCallback stays below, so it is
+     * what you size a per-worker accumulator by. The sequential algorithms return 1.
+     *
+     * Ask *after* any `Aux::setNumberOfThreads()` call: a parallel algorithm reads the thread
+     * count when @ref run() starts, so changing the setting in between changes the answer.
+     */
+    virtual count numberOfWorkers() const { return 1; }
 
     /**
      * Only accept matches that map like-labelled nodes onto each other.

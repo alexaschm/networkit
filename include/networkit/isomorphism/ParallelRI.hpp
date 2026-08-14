@@ -92,6 +92,14 @@ public:
      */
     void run() override;
 
+    /**
+     * How many workers the search will use: the global NetworKit thread count.
+     *
+     * Read it after any `Aux::setNumberOfThreads()` call - @ref run() asks the same question when
+     * it starts, so changing the setting in between changes both answers together.
+     */
+    count numberOfWorkers() const override;
+
 private:
     RI::Variant variant;
 };
