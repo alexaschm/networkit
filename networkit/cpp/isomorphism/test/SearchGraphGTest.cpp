@@ -355,13 +355,15 @@ TEST_F(SearchGraphGTest, testSlicesAreStrictlyAscending) {
     G.forNodes([&](node u) {
         for (const node *it = SG.outBegin(u); it != SG.outEnd(u); ++it) {
             EXPECT_NE(*it, u) << "node " << u << " is its own neighbour";
-            if (it + 1 != SG.outEnd(u))
+            if (it + 1 != SG.outEnd(u)) {
                 EXPECT_LT(*it, *(it + 1)) << "out-slice of " << u << " is not strictly ascending";
+            }
         }
         for (const node *it = SG.inBegin(u); it != SG.inEnd(u); ++it) {
             EXPECT_NE(*it, u);
-            if (it + 1 != SG.inEnd(u))
+            if (it + 1 != SG.inEnd(u)) {
                 EXPECT_LT(*it, *(it + 1)) << "in-slice of " << u << " is not strictly ascending";
+            }
         }
     });
 }
