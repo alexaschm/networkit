@@ -16,6 +16,31 @@ namespace NetworKit {
 namespace IsomorphismDetails {
 
 /**
+ * How many values occur in both of two sorted, strictly ascending ranges.
+ *
+ * Every adjacency slice handed out by @ref SearchGraph has that shape, so this is a plain linear
+ * merge rather than a lookup structure. It takes raw ranges instead of two nodes so that it also
+ * serves the case where only one side is a slice - intersecting a target neighbourhood with a
+ * candidate domain, for instance, which is what RI-DS does on every step.
+ */
+inline count intersectionSize(const node *aBegin, const node *aEnd, const node *bBegin,
+                              const node *bEnd) noexcept {
+    count common = 0;
+    while (aBegin != aEnd && bBegin != bEnd) {
+        if (*aBegin < *bBegin) {
+            ++aBegin;
+        } else if (*bBegin < *aBegin) {
+            ++bBegin;
+        } else {
+            ++common;
+            ++aBegin;
+            ++bBegin;
+        }
+    }
+    return common;
+}
+
+/**
  * A read-only snapshot of a Graph, laid out for the innermost loop of a subgraph search.
  *
  * ## Why this exists
@@ -43,6 +68,12 @@ namespace IsomorphismDetails {
  *   @ref hasEdge() in constant time, but needs `upperNodeIdBound()^2` bits, so it is only ever
  *   built for the *pattern*, which is small by assumption. Building it for a target with a
  *   million nodes would need 125 GB.
+ *
+ * - A bit per id saying **whether it is a node at all**, behind @ref hasNode(). Removed ids keep
+ *   an empty slice and so look exactly like isolated nodes; a search enumerating "every unmapped
+ *   target node" has to be able to tell the two apart or it maps pattern nodes onto ids that do
+ *   not exist. Alongside it, @ref maxOutDegree() / @ref maxInDegree() over the finished slices,
+ *   so the cheap "this pattern cannot possibly fit" test does not have to rescan the graph.
  *
  * ## What it normalizes away
  *
@@ -89,7 +120,27 @@ public:
     /// larger than @ref numberOfNodes(); all the arrays here are sized by this.
     count upperNodeIdBound() const noexcept { return z; }
 
+    /**
+     * Whether node @a u exists in the snapshotted graph.
+     *
+     * `Graph::removeNode()` leaves the id reserved and never lowers @ref upperNodeIdBound(), so a
+     * search that walks ids from 0 to the bound will meet ids that are not nodes. In the snapshot
+     * those are indistinguishable from isolated nodes by adjacency alone - both have an empty
+     * slice - so this is the only way to tell them apart, and a search that skips the check will
+     * happily map a pattern node onto an id that no longer exists.
+     *
+     * @a u must be below @ref upperNodeIdBound().
+     */
+    bool hasNode(node u) const noexcept { return nodeExists[u]; }
+
     bool isDirected() const noexcept { return directed; }
+
+    /// Largest @ref outDegree() over all nodes, or 0 if there are none. A *distinct*-neighbour
+    /// count, so this is not `GraphTools::maxDegree()` when the graph has parallel edges or loops.
+    count maxOutDegree() const noexcept { return maxOut; }
+
+    /// Largest @ref inDegree() over all nodes. Same as @ref maxOutDegree() when undirected.
+    count maxInDegree() const noexcept { return directed ? maxIn : maxOut; }
 
     /// Whether the bit-packed adjacency matrix was actually built.
     bool hasAdjacencyMatrix() const noexcept { return hasMatrix; }
@@ -139,6 +190,11 @@ public:
         return std::binary_search(outBegin(u), outEnd(u), v);
     }
 
+    /// How many nodes are out-neighbours of both @a u and @a v. See @ref intersectionSize().
+    count commonOutNeighbors(node u, node v) const noexcept {
+        return intersectionSize(outBegin(u), outEnd(u), outBegin(v), outEnd(v));
+    }
+
 private:
     /**
      * Fill outFirst/outHead, and inFirst/inHead when the graph is directed.
@@ -147,6 +203,10 @@ private:
      * neighbours, sorts each slice, then compacts the slices to drop self-loops and collapse
      * parallel edges. The degrees taken from `Graph` are an upper bound on the final slice sizes;
      * the compaction pass shrinks the arrays to the true size.
+     *
+     * Also fills `nodeExists` while it is already asking `Graph` which ids are nodes, and records
+     * `maxOut`/`maxIn` once the slices are final - taking those maxima before compaction would
+     * count parallel edges and self-loops, which is exactly the number every caller must not have.
      *
      * Reuse: NetworKit has no CSR graph class to inherit from, so this has to be written, but the
      * count/prefix-sum/scatter shape is established in the repo - see
@@ -182,6 +242,15 @@ private:
     /// CSR in-edges. Empty for undirected graphs.
     std::vector<index> inFirst;
     std::vector<node> inHead;
+
+    /// Whether each id below z is a node. Sized z, so a removed id can be told from an isolated
+    /// one; both have an empty slice.
+    std::vector<bool> nodeExists;
+
+    /// Maxima over the *compacted* slices, so they are distinct-neighbour counts. maxIn is left
+    /// at 0 for undirected graphs, where maxInDegree() returns maxOut instead.
+    count maxOut;
+    count maxIn;
 
     /// Bit per ordered node pair, row-major, matrixStride words per row. Empty if not requested.
     std::vector<uint64_t> matrix;

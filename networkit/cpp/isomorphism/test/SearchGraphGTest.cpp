@@ -6,10 +6,12 @@
  */
 
 #include <algorithm>
+#include <iterator>
 #include <vector>
 
 #include <gtest/gtest.h>
 
+#include <networkit/auxiliary/Random.hpp>
 #include <networkit/graph/Graph.hpp>
 #include <networkit/graph/GraphTools.hpp>
 #include <networkit/io/EdgeListReader.hpp>
@@ -426,6 +428,163 @@ TEST_F(SearchGraphGTest, testMatrixFallsBackForLargeIdBound) {
 
     // Not requesting the matrix must leave it unbuilt whatever the size
     EXPECT_FALSE(IsomorphismDetails::SearchGraph(ordinary, false).hasAdjacencyMatrix());
+}
+
+TEST_F(SearchGraphGTest, testHasNode) {
+
+    // The distinction hasNode() exists for: a removed id and an isolated node both have an empty
+    // slice, so adjacency alone cannot tell them apart. A search enumerating "every unmapped
+    // target node" that skips this check will map pattern nodes onto ids that are not nodes.
+    Graph G = Graph(10);
+    G.addEdge(0, 1);
+    G.removeNode(4);
+    G.removeNode(9); // the last id: the bound must not shrink with it
+
+    IsomorphismDetails::SearchGraph SG = IsomorphismDetails::SearchGraph(G, true);
+
+    ASSERT_EQ(SG.upperNodeIdBound(), 10);
+    ASSERT_EQ(SG.numberOfNodes(), 8);
+
+    for (node u = 0; u < SG.upperNodeIdBound(); ++u) {
+        EXPECT_EQ(SG.hasNode(u), G.hasNode(u)) << "disagreement about node " << u;
+    }
+
+    // Node 7 exists and is isolated; node 4 does not exist. Identical slices, opposite answers.
+    EXPECT_EQ(SG.outDegree(7), SG.outDegree(4));
+    EXPECT_TRUE(SG.hasNode(7));
+    EXPECT_FALSE(SG.hasNode(4));
+
+    // The three degenerate graphs, where an `n == z` shortcut would read as a free optimisation
+    // and be wrong: on the empty graph it makes hasNode() true for every id.
+    IsomorphismDetails::SearchGraph SEmpty = IsomorphismDetails::SearchGraph(Graph(0), true);
+    EXPECT_EQ(SEmpty.numberOfNodes(), 0);
+    EXPECT_EQ(SEmpty.upperNodeIdBound(), 0);
+
+    Graph allRemoved = Graph(5);
+    for (node u = 0; u < 5; ++u)
+        allRemoved.removeNode(u);
+
+    IsomorphismDetails::SearchGraph SAllRemoved = IsomorphismDetails::SearchGraph(allRemoved, true);
+
+    ASSERT_EQ(SAllRemoved.numberOfNodes(), 0);
+    ASSERT_EQ(SAllRemoved.upperNodeIdBound(), 5);
+    for (node u = 0; u < 5; ++u) {
+        EXPECT_FALSE(SAllRemoved.hasNode(u));
+    }
+
+    // A graph where every id is a node is the other extreme, and must stay true throughout
+    IsomorphismDetails::SearchGraph SFull = IsomorphismDetails::SearchGraph(Graph(3), true);
+    for (node u = 0; u < 3; ++u) {
+        EXPECT_TRUE(SFull.hasNode(u));
+    }
+}
+
+TEST_F(SearchGraphGTest, testMaxDegree) {
+
+    // The number callers compare a pattern degree against. Taken from the *compacted* slices, so
+    // it disagrees with GraphTools::maxDegree() the moment there are parallel edges or a loop -
+    // and it is this one that is right for a subgraph search.
+    Graph G = Graph(5);
+    G.addEdge(0, 1);
+    G.addEdge(0, 1); // parallel
+    G.addEdge(0, 1); // parallel
+    G.addEdge(0, 2);
+    G.addEdge(3, 3); // self-loop
+    G.addEdge(3, 4);
+
+    IsomorphismDetails::SearchGraph SG = IsomorphismDetails::SearchGraph(G, true);
+
+    // Node 0 has four incident edges but only two distinct neighbours
+    ASSERT_EQ(G.degree(0), 4);
+    EXPECT_EQ(SG.outDegree(0), 2);
+    EXPECT_EQ(SG.maxOutDegree(), 2);
+    EXPECT_EQ(SG.maxInDegree(), 2); // undirected: mirrors maxOutDegree()
+
+    count expected = 0;
+    G.forNodes([&](node u) { expected = std::max(expected, SG.outDegree(u)); });
+    EXPECT_EQ(SG.maxOutDegree(), expected);
+
+    // The whole point: the naive number would have been 4, and pruning on it would reject valid
+    // host nodes of degree 2 and 3 and silently lose real matches.
+    EXPECT_NE(SG.maxOutDegree(), GraphTools::maxDegree(G));
+
+    // Directed, where the two maxima come from different nodes and must not be conflated.
+    Graph D = Graph(4, false, true);
+    D.addEdge(0, 1);
+    D.addEdge(0, 2);
+    D.addEdge(0, 3); // out-degree 3, in-degree 0
+    D.addEdge(1, 3);
+    D.addEdge(2, 3); // node 3 has in-degree 3, out-degree 0
+
+    IsomorphismDetails::SearchGraph SD = IsomorphismDetails::SearchGraph(D, true);
+
+    EXPECT_EQ(SD.maxOutDegree(), 3);
+    EXPECT_EQ(SD.maxInDegree(), 3);
+    EXPECT_EQ(SD.outDegree(3), 0);
+    EXPECT_EQ(SD.inDegree(3), 3);
+
+    // No nodes and no edges both have to give 0 rather than reading past an empty array
+    EXPECT_EQ(IsomorphismDetails::SearchGraph(Graph(0), false).maxOutDegree(), 0);
+    EXPECT_EQ(IsomorphismDetails::SearchGraph(Graph(0), false).maxInDegree(), 0);
+    EXPECT_EQ(IsomorphismDetails::SearchGraph(Graph(5), false).maxOutDegree(), 0);
+}
+
+TEST_F(SearchGraphGTest, testIntersectionSize) {
+
+    // Checked against std::set_intersection rather than against hand-counted answers, so the test
+    // does not encode the same off-by-one the implementation might.
+    auto expectAgrees = [](std::vector<node> a, std::vector<node> b) {
+        std::vector<node> common;
+        std::set_intersection(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(common));
+        EXPECT_EQ(IsomorphismDetails::intersectionSize(a.data(), a.data() + a.size(), b.data(),
+                                                       b.data() + b.size()),
+                  common.size());
+    };
+
+    expectAgrees({}, {});
+    expectAgrees({1, 2, 3}, {});
+    expectAgrees({}, {1, 2, 3});
+    expectAgrees({1, 3, 5}, {2, 4, 6});    // disjoint
+    expectAgrees({1, 2, 3}, {1, 2, 3});    // identical
+    expectAgrees({1, 2, 3}, {3});          // last element only
+    expectAgrees({1, 2, 3}, {1});          // first element only
+    expectAgrees({0, 5, 9}, {5, 9, 11});   // partial overlap, unequal lengths
+    expectAgrees({2}, {1, 2, 3, 4, 5, 6}); // one against many
+
+    Aux::Random::setSeed(42, false);
+    for (int trial = 0; trial < 50; ++trial) {
+        std::vector<node> a, b;
+        for (node u = 0; u < 40; ++u) {
+            if (Aux::Random::probability() < 0.4)
+                a.push_back(u);
+            if (Aux::Random::probability() < 0.4)
+                b.push_back(u);
+        }
+        expectAgrees(a, b);
+    }
+}
+
+TEST_F(SearchGraphGTest, testCommonOutNeighbors) {
+
+    // Every neighbourhood-cardinality pruning rule rests on this, so it must be the *distinct*
+    // common neighbour count even when the input has parallel edges.
+    Graph G = Graph(6);
+    G.addEdge(0, 2);
+    G.addEdge(0, 3);
+    G.addEdge(0, 4);
+    G.addEdge(1, 3);
+    G.addEdge(1, 3); // parallel: must not double-count node 3
+    G.addEdge(1, 4);
+    G.addEdge(1, 5);
+
+    IsomorphismDetails::SearchGraph SG = IsomorphismDetails::SearchGraph(G, false);
+
+    // N(0) = {2,3,4}, N(1) = {3,4,5}, N(2) = {0}, N(3) = {0,1}, N(5) = {1}
+    EXPECT_EQ(SG.commonOutNeighbors(0, 1), 2); // nodes 3 and 4, counted once despite the parallel
+    EXPECT_EQ(SG.commonOutNeighbors(1, 0), 2); // symmetric when undirected
+    EXPECT_EQ(SG.commonOutNeighbors(0, 5), 0); // {2,3,4} and {1} share nothing
+    EXPECT_EQ(SG.commonOutNeighbors(2, 3), 1); // node 0
+    EXPECT_EQ(SG.commonOutNeighbors(0, 0), SG.outDegree(0));
 }
 
 } // namespace NetworKit

@@ -58,8 +58,8 @@ void compactSlices(std::vector<index> &first, std::vector<node> &head, count z) 
 } // namespace
 
 SearchGraph::SearchGraph(const Graph &G, bool buildMatrix)
-    : matrixStride(0), n(G.numberOfNodes()), z(G.upperNodeIdBound()), directed(G.isDirected()),
-      hasMatrix(buildMatrix) {
+    : matrixStride(0), maxOut(0), maxIn(0), n(G.numberOfNodes()), z(G.upperNodeIdBound()),
+      directed(G.isDirected()), hasMatrix(buildMatrix) {
     // The matrix is a request, not a demand: when it will not fit, drop it and let hasEdge() use
     // the CSR, which is how every target snapshot already works. Note the bound is the *id* bound,
     // and removeNode() lowers neither it nor the ids above it, so a small pattern carved out of a
@@ -88,10 +88,13 @@ SearchGraph::SearchGraph(const Graph &G, bool buildMatrix)
 void SearchGraph::buildCSR(const Graph &G) {
     // Count the out-degree of every node into outFirst[u + 1], then turn the counts into start
     // offsets with a prefix sum. A node that was removed keeps a degree of 0 and so ends up with
-    // an empty slice, which is what lets callers skip hasNode() checks.
+    // an empty slice - indistinguishable from an isolated node by adjacency alone, which is why
+    // the same pass records which ids are nodes at all.
     outFirst.assign(z + 1, 0);
+    nodeExists.assign(z, false);
     for (node u = 0; u < z; ++u) {
         if (G.hasNode(u)) {
+            nodeExists[u] = true;
             outFirst[u + 1] = G.degreeOut(u);
         }
     }
@@ -116,6 +119,12 @@ void SearchGraph::buildCSR(const Graph &G) {
     }
     compactSlices(outFirst, outHead, z);
 
+    // Only now are the slices the sets the search reasons about, so only now is the maximum the
+    // number a caller may compare a pattern degree against.
+    for (node u = 0; u < z; ++u) {
+        maxOut = std::max(maxOut, outDegree(u));
+    }
+
     // For an undirected graph inBegin()/inEnd() fall back to the out-arrays, so a second copy
     // would only waste memory.
     if (directed) {
@@ -135,6 +144,10 @@ void SearchGraph::buildCSR(const Graph &G) {
             std::sort(inHead.data() + inFirst[u], inHead.data() + inFirst[u + 1]);
         }
         compactSlices(inFirst, inHead, z);
+
+        for (node u = 0; u < z; ++u) {
+            maxIn = std::max(maxIn, inDegree(u));
+        }
     }
 }
 
