@@ -1,3 +1,4 @@
+#include <networkit/auxiliary/SignalHandling.hpp>
 #include <networkit/isomorphism/RI.hpp>
 
 #include "RIImpl.hpp"
@@ -13,6 +14,7 @@ void RI::run() {
     using IsomorphismDetails::RIImpl;
     using IsomorphismDetails::SearchGraph;
 
+    Aux::SignalHandler handler;
     prepareRun();
 
     // The pattern is small, so it can afford the adjacency matrix that makes hasEdge() constant
@@ -26,7 +28,7 @@ void RI::run() {
         RIImpl::computeOrdering(patternGraph, targetGraph, patternLabels, targetLabels, variant);
 
     RIImpl(patternGraph, targetGraph, patternLabels, targetLabels, ordering, semantics, variant,
-           sink())
+           handler, sink())
         .run();
 
     finishRun();

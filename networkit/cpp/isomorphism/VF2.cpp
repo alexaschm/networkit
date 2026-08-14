@@ -4,6 +4,7 @@
 #include <tlx/unused.hpp>
 
 #include <networkit/Globals.hpp>
+#include <networkit/auxiliary/SignalHandling.hpp>
 #include <networkit/isomorphism/VF2.hpp>
 
 #include "SearchGraph.hpp"
@@ -44,15 +45,16 @@ public:
      * @param patternLabels Empty when the search is unlabelled.
      * @param targetLabels Empty when the search is unlabelled.
      * @param semantics Whether matches must be induced.
+     * @param handler Polled so a long search can be stopped with CTRL+C.
      * @param sink Where complete mappings are reported. VF2 is sequential, so this is sink(0).
      */
     VF2Impl(const Graph &pattern, const Graph &target, const std::vector<index> &patternLabels,
             const std::vector<index> &targetLabels, SubgraphIsomorphism::Semantics semantics,
-            SubgraphIsomorphism::MatchSink sink)
+            Aux::SignalHandler &handler, SubgraphIsomorphism::MatchSink sink)
         : patternGraph(pattern, /* buildMatrix = */ true),
           targetGraph(target, /* buildMatrix = */ false), patternLabels(&patternLabels),
           targetLabels(&targetLabels), labelled(!patternLabels.empty()), semantics(semantics),
-          sink(sink), t1in(0), t1out(0), t2in(0), t2out(0), nodesVisited(0) {}
+          handler(&handler), sink(sink), t1in(0), t1out(0), t2in(0), t2out(0) {}
 
     /**
      * Search for every match and report each one to the sink.
@@ -69,8 +71,8 @@ public:
     void run() {
         // TODO: remove once implemented.
         tlx::unused(patternGraph, targetGraph, patternLabels, targetLabels, labelled, semantics,
-                    sink, core1, core2, in1, out1, in2, out2, t1in, t1out, t2in, t2out, mapping,
-                    nodesVisited);
+                    handler, sink, core1, core2, in1, out1, in2, out2, t1in, t1out, t2in, t2out,
+                    mapping);
         throw std::logic_error("VF2Impl::run() is not implemented yet");
     }
 
@@ -230,19 +232,6 @@ private:
      */
     bool reportMapping() { throw std::logic_error("VF2Impl::reportMapping() is not implemented"); }
 
-    /**
-     * Let the user interrupt a long search.
-     *
-     * TODO: implement. Increment `nodesVisited` and, when the low bits are zero, ask
-     * `Aux::SignalHandler` whether to keep running. Checking every single node would cost more
-     * than the search itself, hence the mask.
-     *
-     * Reuse: this is the whole implementation - hold an `Aux::SignalHandler` member and call
-     * assureRunning() on it. Nothing about interruption needs to be written here. MaximalCliques
-     * uses exactly this in its recursion; see the module note in SubgraphIsomorphism.cpp.
-     */
-    void checkSignal() { throw std::logic_error("VF2Impl::checkSignal() is not implemented"); }
-
     SearchGraph patternGraph;
     SearchGraph targetGraph;
 
@@ -251,6 +240,12 @@ private:
     bool labelled;
 
     SubgraphIsomorphism::Semantics semantics;
+
+    /// Call `handler->assureRunning()` in the recursion; it throws to abort a long search.
+    /// VF2 is sequential, so the throwing form is safe here - see Betweenness.cpp for what a
+    /// parallel search has to do instead.
+    Aux::SignalHandler *handler;
+
     SubgraphIsomorphism::MatchSink sink;
 
     /// core1[patternNode] = target node it is mapped to, or `none`.
@@ -265,9 +260,6 @@ private:
 
     /// Reused buffer handed to the sink, so a match costs no allocation.
     std::vector<node> mapping;
-
-    /// Counts recursion steps so checkSignal() can poll only every so often.
-    count nodesVisited;
 };
 
 } // namespace
@@ -276,8 +268,9 @@ VF2::VF2(const Graph &pattern, const Graph &target, Semantics semantics, count m
     : SubgraphIsomorphism(pattern, target, semantics, maxMatches) {}
 
 void VF2::run() {
+    Aux::SignalHandler handler;
     prepareRun();
-    VF2Impl(*pattern, *target, patternLabels, targetLabels, semantics, sink()).run();
+    VF2Impl(*pattern, *target, patternLabels, targetLabels, semantics, handler, sink()).run();
     finishRun();
 }
 

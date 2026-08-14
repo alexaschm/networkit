@@ -4,6 +4,7 @@
 #include <tlx/unused.hpp>
 
 #include <networkit/Globals.hpp>
+#include <networkit/auxiliary/SignalHandling.hpp>
 #include <networkit/isomorphism/VF3.hpp>
 
 #include "SearchGraph.hpp"
@@ -45,15 +46,16 @@ public:
      * @param patternLabels Empty when the search is unlabelled; then there is one class.
      * @param targetLabels Empty when the search is unlabelled.
      * @param semantics Whether matches must be induced.
+     * @param handler Polled so a long search can be stopped with CTRL+C.
      * @param sink Where complete mappings are reported. VF3 is sequential, so this is sink(0).
      */
     VF3Impl(const Graph &pattern, const Graph &target, const std::vector<index> &patternLabels,
             const std::vector<index> &targetLabels, SubgraphIsomorphism::Semantics semantics,
-            SubgraphIsomorphism::MatchSink sink)
+            Aux::SignalHandler &handler, SubgraphIsomorphism::MatchSink sink)
         : patternGraph(pattern, /* buildMatrix = */ true),
           targetGraph(target, /* buildMatrix = */ false), patternLabels(&patternLabels),
           targetLabels(&targetLabels), labelled(!patternLabels.empty()), semantics(semantics),
-          sink(sink), numberOfClasses(0), nodesVisited(0) {}
+          handler(&handler), sink(sink), numberOfClasses(0) {}
 
     /**
      * Search for every match and report each one to the sink.
@@ -69,8 +71,8 @@ public:
     void run() {
         // TODO: remove once implemented.
         tlx::unused(patternGraph, targetGraph, patternLabels, targetLabels, labelled, semantics,
-                    sink, patternClass, targetClass, targetClassSize, numberOfClasses, order,
-                    orderParent, feasibilitySets, core1, core2, mapping, nodesVisited);
+                    handler, sink, patternClass, targetClass, targetClassSize, numberOfClasses,
+                    order, orderParent, feasibilitySets, core1, core2, mapping);
         throw std::logic_error("VF3Impl::run() is not implemented yet");
     }
 
@@ -241,17 +243,6 @@ private:
      */
     bool reportMapping() { throw std::logic_error("VF3Impl::reportMapping() is not implemented"); }
 
-    /**
-     * Let the user interrupt a long search.
-     *
-     * TODO: implement. Increment `nodesVisited` and poll `Aux::SignalHandler` only when its low
-     * bits are zero, so the check costs nothing in the common case.
-     *
-     * Reuse: hold an `Aux::SignalHandler` member and call assureRunning() on it - that is the
-     * entire body. See the module note in SubgraphIsomorphism.cpp.
-     */
-    void checkSignal() { throw std::logic_error("VF3Impl::checkSignal() is not implemented"); }
-
     SearchGraph patternGraph;
     SearchGraph targetGraph;
 
@@ -260,6 +251,12 @@ private:
     bool labelled;
 
     SubgraphIsomorphism::Semantics semantics;
+
+    /// Call `handler->assureRunning()` in the recursion; it throws to abort a long search.
+    /// VF3 is sequential, so the throwing form is safe here - see Betweenness.cpp for what a
+    /// parallel search has to do instead.
+    Aux::SignalHandler *handler;
+
     SubgraphIsomorphism::MatchSink sink;
 
     /// Class of every node, derived from its label. All zero when the search is unlabelled.
@@ -283,9 +280,6 @@ private:
 
     /// Reused buffer handed to the sink, so a match costs no allocation.
     std::vector<node> mapping;
-
-    /// Counts recursion steps so checkSignal() can poll only every so often.
-    count nodesVisited;
 };
 
 } // namespace
@@ -294,8 +288,9 @@ VF3::VF3(const Graph &pattern, const Graph &target, Semantics semantics, count m
     : SubgraphIsomorphism(pattern, target, semantics, maxMatches) {}
 
 void VF3::run() {
+    Aux::SignalHandler handler;
     prepareRun();
-    VF3Impl(*pattern, *target, patternLabels, targetLabels, semantics, sink()).run();
+    VF3Impl(*pattern, *target, patternLabels, targetLabels, semantics, handler, sink()).run();
     finishRun();
 }
 

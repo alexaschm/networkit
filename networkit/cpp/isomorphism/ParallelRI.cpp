@@ -7,6 +7,7 @@
 
 #include <networkit/Globals.hpp>
 #include <networkit/auxiliary/Parallelism.hpp>
+#include <networkit/auxiliary/SignalHandling.hpp>
 #include <networkit/isomorphism/ParallelRI.hpp>
 
 #include "RIImpl.hpp"
@@ -51,6 +52,8 @@ public:
      * @param ordering Shared read-only matching order, computed once by the caller.
      * @param semantics Whether matches must be induced.
      * @param variant Plain RI or RI-DS.
+     * @param handler Shared by every worker. Only its non-throwing isRunning() may be called
+     *        from inside the parallel region.
      * @param serializeCallback True when the user's callback must not run concurrently, in which
      *        case reporting has to happen inside a critical section.
      * @param sinks One per worker, in worker-id order. Never shared between threads.
@@ -58,11 +61,11 @@ public:
     ParallelRIImpl(const SearchGraph &patternGraph, const SearchGraph &targetGraph,
                    const std::vector<index> &patternLabels, const std::vector<index> &targetLabels,
                    const RIImpl::Ordering &ordering, SubgraphIsomorphism::Semantics semantics,
-                   RI::Variant variant, bool serializeCallback,
+                   RI::Variant variant, Aux::SignalHandler &handler, bool serializeCallback,
                    std::vector<SubgraphIsomorphism::MatchSink> sinks)
         : patternGraph(&patternGraph), targetGraph(&targetGraph), patternLabels(&patternLabels),
           targetLabels(&targetLabels), ordering(&ordering), semantics(semantics), variant(variant),
-          serializeCallback(serializeCallback), sinks(std::move(sinks)),
+          handler(&handler), serializeCallback(serializeCallback), sinks(std::move(sinks)),
           numWorkers(this->sinks.size()), stopped(false), tokenHolder(0) {}
 
     /**
@@ -84,7 +87,8 @@ public:
     void run() {
         // TODO: remove once implemented.
         tlx::unused(patternGraph, targetGraph, patternLabels, targetLabels, ordering, semantics,
-                    variant, serializeCallback, sinks, numWorkers, workers, stopped, tokenHolder);
+                    variant, handler, serializeCallback, sinks, numWorkers, workers, stopped,
+                    tokenHolder);
         throw std::logic_error("ParallelRIImpl::run() is not implemented yet");
     }
 
@@ -120,13 +124,13 @@ private:
      *  2. Expand the state with my own RIImpl and push the children back with pushLocal().
      *  3. If expand() returns false the match limit was reached: set `stopped` and return, which
      *     unwinds every other worker as well.
-     *  4. Poll Aux::SignalHandler occasionally so CTRL+C works.
+     *  4. Call `handler->isRunning()` and on false set `stopped` and return, so every worker
+     *     winds down.
      *
-     * Reuse, with one caveat that matters here: `Aux::SignalHandler` is the right tool, but step 4
-     * must use its non-throwing isRunning() rather than assureRunning(). Letting the resulting
-     * InterruptException escape an OpenMP structured block is undefined behaviour. Set the
-     * existing `stopped` flag instead, let every worker unwind normally, and if the exception
-     * should reach the caller, throw it once after the parallel region has joined.
+     * Step 4 must use isRunning() and never assureRunning(): an exception escaping an OpenMP
+     * structured block is undefined behaviour. ParallelRI::run() calls assureRunning() once,
+     * after the region has joined, which is where the InterruptException actually comes from.
+     * This is the pattern Betweenness.cpp uses.
      */
     void workerLoop(index tid) {
         tlx::unused(tid);
@@ -238,6 +242,10 @@ private:
     SubgraphIsomorphism::Semantics semantics;
     RI::Variant variant;
 
+    /// Shared by every worker. Inside the region only the non-throwing isRunning() may be
+    /// called on it; ParallelRI::run() does the throwing assureRunning() once, after the join.
+    Aux::SignalHandler *handler;
+
     /// True when the user's callback must not be invoked concurrently.
     bool serializeCallback;
 
@@ -247,7 +255,7 @@ private:
 
     std::vector<Worker> workers;
 
-    /// Set when the match limit is reached, so every worker unwinds.
+    /// Set when the match limit is reached or the search is interrupted, so every worker unwinds.
     std::atomic<bool> stopped;
     /// Who currently holds the termination token.
     std::atomic<index> tokenHolder;
@@ -260,6 +268,8 @@ ParallelRI::ParallelRI(const Graph &pattern, const Graph &target, RI::Variant va
     : SubgraphIsomorphism(pattern, target, semantics, maxMatches), variant(variant) {}
 
 void ParallelRI::run() {
+    Aux::SignalHandler handler;
+
     const count numWorkers = static_cast<count>(Aux::getMaxNumberOfThreads());
 
     prepareRun(numWorkers);
@@ -277,8 +287,11 @@ void ParallelRI::run() {
         sinks.push_back(sink(tid));
 
     ParallelRIImpl(patternGraph, targetGraph, patternLabels, targetLabels, ordering, semantics,
-                   variant, hasSerialCallback(), std::move(sinks))
+                   variant, handler, hasSerialCallback(), std::move(sinks))
         .run();
+
+    // Only now, with every worker joined, is it safe to let an exception out.
+    handler.assureRunning();
 
     finishRun();
 }

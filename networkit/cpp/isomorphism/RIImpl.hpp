@@ -12,6 +12,7 @@
 #include <vector>
 
 #include <networkit/Globals.hpp>
+#include <networkit/auxiliary/SignalHandling.hpp>
 #include <networkit/isomorphism/RI.hpp>
 #include <networkit/isomorphism/SubgraphIsomorphism.hpp>
 
@@ -123,12 +124,15 @@ public:
      * @param ordering Shared, read-only; must outlive this object.
      * @param semantics Whether matches must be induced.
      * @param variant Plain RI or RI-DS.
+     * @param handler Polled so a long search can be stopped with CTRL+C. Shared between
+     *        workers; only the non-throwing isRunning() may be used, since ParallelRI runs this
+     *        inside an OpenMP region.
      * @param sink Where complete mappings go. One per worker; never shared between threads.
      */
     RIImpl(const SearchGraph &pattern, const SearchGraph &target,
            const std::vector<index> &patternLabels, const std::vector<index> &targetLabels,
            const Ordering &ordering, SubgraphIsomorphism::Semantics semantics, RI::Variant variant,
-           SubgraphIsomorphism::MatchSink sink);
+           Aux::SignalHandler &handler, SubgraphIsomorphism::MatchSink sink);
 
     /**
      * Run the entire search from the empty mapping. Used by @ref RI.
@@ -248,18 +252,6 @@ private:
      */
     bool reportMapping(const State &state);
 
-    /**
-     * Let the user interrupt a long search.
-     *
-     * TODO: implement. Increment `nodesVisited` and poll `Aux::SignalHandler` only when its low
-     * bits are zero, so the check costs nothing in the common case.
-     *
-     * Reuse: hold an `Aux::SignalHandler` member and call assureRunning() on it - that is the
-     * entire body. Note that ParallelRI must *not* let the resulting InterruptException escape its
-     * OpenMP region; see the note on ParallelRIImpl::workerLoop().
-     */
-    void checkSignal();
-
     const SearchGraph *patternGraph;
     const SearchGraph *targetGraph;
 
@@ -272,6 +264,12 @@ private:
 
     SubgraphIsomorphism::Semantics semantics;
     RI::Variant variant;
+
+    /// Shared with every other worker. Poll it as `handler->isRunning()` and stop on false -
+    /// never assureRunning(), because ParallelRI runs this inside an OpenMP region and an
+    /// exception escaping one of those is undefined behaviour.
+    Aux::SignalHandler *handler;
+
     SubgraphIsomorphism::MatchSink sink;
 
     /// RI_DS only: domains[i] lists the target nodes position i could map to. Empty under RI.
@@ -282,9 +280,6 @@ private:
 
     /// Scratch for candidatesFor(), reused so that expanding a state costs no allocation.
     mutable std::vector<node> candidateBuffer;
-
-    /// Counts search steps so checkSignal() can poll only every so often.
-    count nodesVisited;
 };
 
 } // namespace IsomorphismDetails

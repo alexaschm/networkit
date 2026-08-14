@@ -18,15 +18,16 @@ RIImpl::Ordering RIImpl::computeOrdering(const SearchGraph &pattern, const Searc
 RIImpl::RIImpl(const SearchGraph &pattern, const SearchGraph &target,
                const std::vector<index> &patternLabels, const std::vector<index> &targetLabels,
                const Ordering &ordering, SubgraphIsomorphism::Semantics semantics,
-               RI::Variant variant, SubgraphIsomorphism::MatchSink sink)
+               RI::Variant variant, Aux::SignalHandler &handler,
+               SubgraphIsomorphism::MatchSink sink)
     : patternGraph(&pattern), targetGraph(&target), patternLabels(&patternLabels),
       targetLabels(&targetLabels), labelled(!patternLabels.empty()), ordering(&ordering),
-      semantics(semantics), variant(variant), sink(sink), nodesVisited(0) {}
+      semantics(semantics), variant(variant), handler(&handler), sink(sink) {}
 
 void RIImpl::run() {
     // TODO: remove once implemented.
     tlx::unused(patternGraph, targetGraph, patternLabels, targetLabels, labelled, ordering,
-                semantics, variant, sink, domains, matchBuffer, candidateBuffer, nodesVisited);
+                semantics, variant, handler, sink, domains, matchBuffer, candidateBuffer);
     throw std::logic_error("RIImpl::run() is not implemented yet");
 }
 
@@ -72,10 +73,6 @@ void RIImpl::initializeDomains() {
 bool RIImpl::reportMapping(const State &state) {
     tlx::unused(state);
     throw std::logic_error("RIImpl::reportMapping() is not implemented yet");
-}
-
-void RIImpl::checkSignal() {
-    throw std::logic_error("RIImpl::checkSignal() is not implemented yet");
 }
 
 } // namespace IsomorphismDetails

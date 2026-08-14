@@ -255,6 +255,12 @@ public:
 
     /**
      * Run the search. Implemented by each concrete algorithm.
+     *
+     * Throws `Aux::SignalHandler::InterruptException` if the search was interrupted with CTRL+C.
+     * The algorithm is then left **not finished**: @ref Algorithm::hasFinished() stays false and
+     * @ref getMatches(), @ref numberOfMatches() and @ref hasMatch() all throw. Matches already
+     * handed to a callback stay handed over - a search cannot take them back. This is what every
+     * interruptible algorithm in NetworKit does, so nothing here is a special case.
      */
     void run() override = 0;
 
@@ -378,6 +384,13 @@ protected:
     // Use isLabelled() to find out whether labels are in play, and hasSerialCallback() to find
     // out whether the user's callback must not be called concurrently - if it must not, wrap the
     // report() call in a critical section.
+    //
+    // Interruption works exactly as it does everywhere else in NetworKit, with no machinery of
+    // this module's own: hold an `Aux::SignalHandler` local to run() and call assureRunning() on
+    // it, as MaximalCliques does. A *parallel* search must instead call the non-throwing
+    // isRunning() inside the region and assureRunning() once after the workers join, because an
+    // exception escaping an OpenMP structured block is undefined behaviour - see Betweenness.cpp,
+    // which is the pattern to copy.
     //
     // The search itself belongs in a separate implementation class in the .cpp file, so that the
     // public header never grows a member. See VF2.cpp for the pattern.
