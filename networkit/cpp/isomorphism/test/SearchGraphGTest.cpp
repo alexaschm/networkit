@@ -17,7 +17,6 @@
 #include <networkit/io/EdgeListReader.hpp>
 #include <networkit/io/METISGraphReader.hpp>
 #include <networkit/isomorphism/SubgraphIsomorphism.hpp>
-#include <networkit/isomorphism/VF2.hpp>
 
 #include "../SearchGraph.hpp"
 
@@ -241,91 +240,41 @@ TEST_F(SearchGraphGTest, testCSRAdjEqualBehaviour) {
     }
 }
 
-TEST_F(SearchGraphGTest, testMultiEdgesCollapsedUndirected) {
+TEST_F(SearchGraphGTest, testMultiEdgesAndLoopsCollapsed) {
 
-    // Graph::addEdge() permits parallel edges by default, so a snapshot has to collapse them:
-    // a repeated neighbour would make a search enumerate the same candidate twice, and would
-    // inflate the degrees that every feasibility rule prunes on.
-    Graph G = Graph(6);
-
-    G.addEdge(1, 2);
-    G.addEdge(1, 2);
-    G.addEdge(2, 1);
-    G.addEdge(3, 4);
-    G.addEdge(5, 5);
-    G.addEdge(5, 5);
-
-    ASSERT_EQ(G.degreeOut(1), 3);
-    ASSERT_EQ(G.degreeOut(5), 2);
-
-    IsomorphismDetails::SearchGraph SG = IsomorphismDetails::SearchGraph(G, false);
-
-    expectSlicesAreSimpleNeighborhoods(G, SG);
-
-    EXPECT_EQ(std::vector<node>(SG.outBegin(1), SG.outEnd(1)), (std::vector<node>{2}));
-    EXPECT_EQ(std::vector<node>(SG.outBegin(2), SG.outEnd(2)), (std::vector<node>{1}));
-    EXPECT_EQ(SG.outDegree(1), 1);
-    EXPECT_EQ(SG.outDegree(2), 1);
-
-    // A repeated self-loop collapses to nothing at all
-    EXPECT_EQ(SG.outDegree(5), 0);
-    EXPECT_FALSE(SG.hasEdge(5, 5));
-
-    EXPECT_TRUE(SG.hasEdge(1, 2));
-    EXPECT_TRUE(SG.hasEdge(2, 1));
-    EXPECT_TRUE(SG.hasEdge(3, 4));
-}
-
-TEST_F(SearchGraphGTest, testMultiEdgesCollapsedDirected) {
-
-    Graph G = Graph(6, false, true);
-
-    G.addEdge(1, 2);
-    G.addEdge(1, 2);
-    G.addEdge(2, 1);
-    G.addEdge(3, 3);
-    G.addEdge(3, 3);
-
-    ASSERT_EQ(G.degreeOut(1), 2);
-    ASSERT_EQ(G.degreeIn(2), 2);
-
-    IsomorphismDetails::SearchGraph SG = IsomorphismDetails::SearchGraph(G, false);
-
-    expectSlicesAreSimpleNeighborhoods(G, SG);
-
-    EXPECT_EQ(std::vector<node>(SG.outBegin(1), SG.outEnd(1)), (std::vector<node>{2}));
-    EXPECT_EQ(std::vector<node>(SG.inBegin(2), SG.inEnd(2)), (std::vector<node>{1}));
-    EXPECT_EQ(std::vector<node>(SG.outBegin(2), SG.outEnd(2)), (std::vector<node>{1}));
-    EXPECT_EQ(std::vector<node>(SG.inBegin(1), SG.inEnd(1)), (std::vector<node>{2}));
-
-    // The direction still matters - collapsing must not symmetrize anything
-    EXPECT_TRUE(SG.hasEdge(1, 2));
-    EXPECT_TRUE(SG.hasEdge(2, 1));
-    EXPECT_FALSE(SG.hasEdge(1, 3));
-
-    EXPECT_EQ(SG.outDegree(3), 0);
-    EXPECT_EQ(SG.inDegree(3), 0);
-    EXPECT_FALSE(SG.hasEdge(3, 3));
-}
-
-TEST_F(SearchGraphGTest, testBackendsAgreeOnLoopsAndMultiEdges) {
-
-    // The two hasEdge() backends must not drift apart: the CSR drops self-loops, so the matrix
-    // has to leave the diagonal clear too. karate has neither loops nor multi-edges, so
-    // testCSRAdjEqualBehaviour above cannot catch this.
+    // Graph::addEdge() permits parallel edges and self-loops by default, so a snapshot has to
+    // collapse them: a repeated neighbour would make a search enumerate the same candidate twice
+    // and would inflate the degrees every feasibility rule prunes on, while a self-loop is never
+    // usable because both semantics only constrain pairs of *distinct* nodes.
+    //
+    // Both directednesses and both hasEdge() backends have to agree about all of that, which is
+    // why they are one test: the CSR drops self-loops, so the matrix has to leave the diagonal
+    // clear too, and karate - which testCSRAdjEqualBehaviour uses - has neither loops nor
+    // parallel edges to catch it with. The id bound reaches past 64 so the matrix spans more than
+    // one word per row.
     for (bool directed : {false, true}) {
         Graph G = Graph(70, false, directed);
 
-        G.addEdge(0, 1);
-        G.addEdge(0, 1);
-        G.addEdge(1, 0);
-        G.addEdge(0, 0);
-        G.addEdge(64, 65); // second word of each row
+        G.addEdge(1, 2);
+        G.addEdge(1, 2); // parallel
+        G.addEdge(2, 1); // the reverse; under `directed` a genuinely different edge
+        G.addEdge(3, 4);
+        G.addEdge(5, 5);
+        G.addEdge(5, 5); // a repeated self-loop collapses to nothing at all
         G.addEdge(64, 65);
+        G.addEdge(64, 65); // second word of each matrix row
         G.addEdge(65, 64);
         G.addEdge(69, 69);
-        G.addEdge(2, 66);
-        G.addEdge(66, 2);
+        G.addEdge(7, 66); // across the word boundary
+        G.addEdge(66, 7);
+
+        if (directed) {
+            ASSERT_EQ(G.degreeOut(1), 2);
+            ASSERT_EQ(G.degreeIn(2), 2);
+        } else {
+            ASSERT_EQ(G.degreeOut(1), 3);
+        }
+        ASSERT_EQ(G.degreeOut(5), 2);
 
         IsomorphismDetails::SearchGraph S_CSR = IsomorphismDetails::SearchGraph(G, false);
         IsomorphismDetails::SearchGraph S_Adj = IsomorphismDetails::SearchGraph(G, true);
@@ -333,14 +282,43 @@ TEST_F(SearchGraphGTest, testBackendsAgreeOnLoopsAndMultiEdges) {
         expectSlicesAreSimpleNeighborhoods(G, S_CSR);
         expectSlicesAreSimpleNeighborhoods(G, S_Adj);
 
+        for (const IsomorphismDetails::SearchGraph *SG : {&S_CSR, &S_Adj}) {
+            EXPECT_EQ(std::vector<node>(SG->outBegin(1), SG->outEnd(1)), (std::vector<node>{2}))
+                << "directed=" << directed;
+            EXPECT_EQ(std::vector<node>(SG->outBegin(2), SG->outEnd(2)), (std::vector<node>{1}))
+                << "directed=" << directed;
+            EXPECT_EQ(SG->outDegree(1), 1) << "directed=" << directed;
+            EXPECT_EQ(SG->outDegree(2), 1) << "directed=" << directed;
+
+            EXPECT_EQ(std::vector<node>(SG->inBegin(2), SG->inEnd(2)), (std::vector<node>{1}))
+                << "directed=" << directed;
+            EXPECT_EQ(std::vector<node>(SG->inBegin(1), SG->inEnd(1)), (std::vector<node>{2}))
+                << "directed=" << directed;
+
+            EXPECT_TRUE(SG->hasEdge(1, 2)) << "directed=" << directed;
+            EXPECT_TRUE(SG->hasEdge(2, 1)) << "directed=" << directed;
+            EXPECT_TRUE(SG->hasEdge(3, 4)) << "directed=" << directed;
+
+            // Collapsing must not symmetrize anything: 3-4 was only ever added one way round.
+            EXPECT_EQ(SG->hasEdge(4, 3), !directed) << "directed=" << directed;
+            EXPECT_FALSE(SG->hasEdge(1, 3)) << "directed=" << directed;
+
+            // Self-loops leave no trace, in either the slices or the degrees.
+            EXPECT_EQ(SG->outDegree(5), 0) << "directed=" << directed;
+            EXPECT_EQ(SG->inDegree(5), 0) << "directed=" << directed;
+            EXPECT_FALSE(SG->hasEdge(5, 5)) << "directed=" << directed;
+            EXPECT_FALSE(SG->hasEdge(69, 69)) << "directed=" << directed;
+        }
+
+        // The two backends must not drift apart anywhere, on or off the diagonal.
         for (node u = 0; u < G.upperNodeIdBound(); u++) {
             for (node v = 0; v < G.upperNodeIdBound(); v++) {
                 EXPECT_EQ(S_CSR.hasEdge(u, v), S_Adj.hasEdge(u, v))
                     << "directed=" << directed << " u=" << u << " v=" << v;
             }
             // No node is ever its own neighbour, whichever backend answers
-            EXPECT_FALSE(S_CSR.hasEdge(u, u));
-            EXPECT_FALSE(S_Adj.hasEdge(u, u));
+            EXPECT_FALSE(S_CSR.hasEdge(u, u)) << "directed=" << directed;
+            EXPECT_FALSE(S_Adj.hasEdge(u, u)) << "directed=" << directed;
         }
     }
 }
