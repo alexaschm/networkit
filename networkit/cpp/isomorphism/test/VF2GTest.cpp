@@ -51,31 +51,24 @@ TEST_F(VF2GTest, dummyTest) {
     vf.run();
     EXPECT_TRUE(vf.hasMatch());
     EXPECT_EQ(vf.numberOfMatches(), 12);
+}
+
+TEST_F(VF2GTest, testInitialTriangleCount) {
+
+    // Count triangles in karate graph as initial test
+    Graph pattern = Graph(3);
+
+    pattern.addEdge(0, 1);
+    pattern.addEdge(1, 2);
+    pattern.addEdge(2, 0);
 
     METISGraphReader reader;
     Graph karate = reader.read("input/karate.graph");
 
-    VF2 vf1 = VF2(pattern, karate);
-    vf1.run();
-    EXPECT_TRUE(vf1.hasMatch());
-    EXPECT_EQ(vf1.numberOfMatches(), 270);
-}
-
-TEST_F(VF2GTest, testInterrupt) {
-    Graph pattern = IsomorphismTest::graphOf(3, {{0, 1}, {1, 2}, {2, 0}});
-    METISGraphReader reader;
-    Graph airfoil = reader.read("input/airfoil1.graph");
-
-    VF2 vf = VF2(pattern, airfoil);
-
-    std::thread interruptThread([] {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        std::raise(SIGINT);
-    });
-
-    EXPECT_THROW(vf.run(), Aux::SignalHandler::InterruptException);
-
-    interruptThread.join();
+    VF2 vf = VF2(pattern, karate);
+    vf.run();
+    EXPECT_TRUE(vf.hasMatch());
+    EXPECT_EQ(vf.numberOfMatches(), 270u);
 }
 
 TEST_F(VF2GTest, testTrivialCases) {
@@ -91,7 +84,7 @@ TEST_F(VF2GTest, testTrivialCases) {
     EXPECT_EQ(vf1.numberOfMatches(), 1);
     EXPECT_EQ(vf1.getMatches(), std::vector<std::vector<node>>{{}});
 
-    // Empty pattern, undirected
+    // Empty pattern, directed
     Graph pattern2 = Graph(0, false, true);
     Graph target2 = IsomorphismTest::graphOf(3, {{0, 1}, {1, 2}, {2, 0}}, true);
 
@@ -186,6 +179,26 @@ TEST_F(VF2GTest, testCallbackFormsAgree) {
     };
 
     IsomorphismTest::expectCallbackFormsAgree(make);
+}
+
+TEST_F(VF2GTest, testInterrupt) {
+    Graph pattern = IsomorphismTest::graphOf(3, {{0, 1}, {1, 2}, {2, 0}});
+    Graph target = Graph(30);
+    for (node u = 0; u < 30; ++u) {
+        for (node v = u + 1; v < 30; ++v) {
+            target.addEdge(u, v);
+        }
+    }
+    VF2 vf = VF2(pattern, target);
+
+    std::thread interruptThread([] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        std::raise(SIGINT);
+    });
+
+    EXPECT_THROW(vf.run(), Aux::SignalHandler::InterruptException);
+
+    interruptThread.join();
 }
 
 } // namespace NetworKit

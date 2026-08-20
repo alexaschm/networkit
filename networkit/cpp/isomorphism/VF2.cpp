@@ -17,33 +17,22 @@ namespace {
 using IsomorphismDetails::MatchReporter;
 using IsomorphismDetails::SearchGraph;
 
-auto printVector = [](const auto &v) {
-    std::cout << "[";
-    for (index i = 0; i < v.size(); ++i) {
-        if (i > 0)
-            std::cout << ", ";
-
-        if (v[i] == none)
-            std::cout << "none";
-        else
-            std::cout << v[i];
-    }
-    std::cout << "]\n";
-};
-
 /**
  * Issues:
  *
- * We start with match(0). If nodes as added to terminal sets at depth 0, it just reads as if they
- * are not present. Current fix: Start with match(1)
+ * We start with match(0). If nodes as added to terminal sets at depth 0, they get the depth stamp 0
+ * so it just reads as if they are not present. Current fix: Start with match(1)
  *
  * Is removePair supposed to exactly reverse addPair? Upon addition we remove pu, tv from all
  * terminal sets but dont store their depth so we are unable to restore this in removePair. Current
- * fix: Use vector to store depth stamps of pair pu, tv
+ * fix: Use a vector to store depth stamps of pair pu, tv before removing them from all terminal
+ * sets in addPair(pu,tv)
  *
- * Depth parameter is not used in nextCandidatePair and feasible
+ * depth parameter in nextCandidatePair() is never used. If both in1 and in2 or both out1 and out2
+ * are nonempty, in nextCandidatePair() we pair the smallest node in the first set with every node
+ * in the second set. Could/should we use the depth parameter anywhere?
  *
- * TODO: More testcases, reference check with brute force algo
+ * TODO: More testcases?
  *
  * TODO: ruleLabels must check edge labels
  */
@@ -90,31 +79,10 @@ public:
           handler(&handler), report(std::move(report)), t1in(0), t1out(0), t2in(0), t2out(0) {}
 
     /**
-     * Search for every match and report each one.
-     *
-     * TODO: implement.
-     *  1. Size core1/core2 to the two upper node id bounds and fill them with `none`; size
-     *     in1/out1/in2/out2 to the same and fill them with 0; size `mapping` to the pattern's
-     *     upper node id bound. Reserve `mapping` once and reuse it - a match is reported by
-     *     reference, so it must not be reallocated per match.
-     *  2. Handle the trivial cases up front: an empty pattern matches once, and a pattern with
-     *     more nodes or a higher maximum degree than the target can never match at all.
-     *  3. Call match(0) and let the recursion do the rest.
+     * Search for every match and report each one. Initialize core1/core2 and in1/out1/in2/out2.
+     * Handle trivial cases immediately and call match(0) to start the recursion.
      */
     void run() {
-        // TODO: remove once implemented.
-        /*tlx::unused(patternGraph, targetGraph, patternLabels, targetLabels, labelled, semantics,
-                    handler, report, core1, core2, in1, out1, in2, out2, t1in, t1out, t2in, t2out,
-                    mapping);
-        throw std::logic_error("VF2Impl::run() is not implemented yet");*/
-
-        std::cout << "Entering run()" << std::endl;
-
-        if ((patternGraph.numberOfNodes() > targetGraph.numberOfNodes())
-            || (patternGraph.maxInDegree() > targetGraph.maxInDegree())
-            || (patternGraph.maxOutDegree() > targetGraph.maxOutDegree())) {
-            return;
-        }
 
         core1.assign(patternGraph.upperNodeIdBound(), none);
         core2.assign(targetGraph.upperNodeIdBound(), none);
@@ -124,32 +92,18 @@ public:
         out2.assign(targetGraph.upperNodeIdBound(), 0);
         mapping.resize(patternGraph.upperNodeIdBound(), none);
 
-        std::cout << "core1: ";
-        printVector(core1);
-
-        std::cout << "core2: ";
-        printVector(core2);
-
-        std::cout << "in1: ";
-        printVector(in1);
-
-        std::cout << "out1: ";
-        printVector(out1);
-
-        std::cout << "in2: ";
-        printVector(in2);
-
-        std::cout << "out2: ";
-        printVector(out2);
-
-        std::cout << "mapping: ";
-        printVector(mapping);
-
         if (patternGraph.numberOfNodes() == 0) {
             reportMapping();
             return;
         }
 
+        if (patternGraph.numberOfNodes() > targetGraph.numberOfNodes()
+            || patternGraph.maxInDegree() > targetGraph.maxInDegree()
+            || patternGraph.maxOutDegree() > targetGraph.maxOutDegree()) {
+            return;
+        }
+
+        // TODO: This is supposed to be match(0)
         match(1);
     }
 
@@ -157,31 +111,15 @@ private:
     /**
      * One level of the depth-first search: extend a mapping of @a depth pairs by one more.
      *
-     * TODO: implement.
-     *  1. If @a depth equals the number of pattern nodes, the mapping is complete: report it and
-     *     return what reportMapping() returned, so that a false travels all the way back up and
-     *     stops the search.
-     *  2. Otherwise loop over the candidate pairs from nextCandidatePair(). For each, test
-     *     feasible(); if it passes, addPair(), recurse into match(depth + 1), then removePair()
-     *     regardless of the outcome. Propagate a false result upward immediately.
-     *  3. Return true when the loop runs out - that means "no match down here, but keep going".
-     *
      * @return false if the whole search must stop, true otherwise.
      */
     bool match(count depth) {
-        /*tlx::unused(depth);
-        throw std::logic_error("VF2Impl::match() is not implemented yet");*/
 
-        bool helper;
-        std::vector<count> helperVector(4, 0);
+        std::vector<count> oldNodePairDepthStamps(4, 0);
 
-        std::cout << "Entering match()" << std::endl;
-
+        // If all pattern nodes are mapped, return mapping
         if (depth - 1 == patternGraph.numberOfNodes()) {
-            std::cout << "Depth reached" << std::endl;
-            helper = reportMapping();
-            std::cout << "Report mapping returns " << helper << std::endl;
-            return helper;
+            return reportMapping();
         }
 
         index cursor = 0;
@@ -189,15 +127,15 @@ private:
         node tv = none;
         bool continueSearch;
 
+        // Iterate over all candidate pairs and if candidate pair is feasible, add pair and call
+        // match(depth + 1)
         while (nextCandidatePair(depth, cursor, pu, tv)) {
-            std::cout << "Candidate pair: (" << pu << ", " << tv << ")" << std::endl;
             handler->assureRunning();
-            if (feasible(pu, tv, depth)) {
-                std::cout << "(" << pu << "," << tv << ") is feasible" << std::endl;
-                helperVector = addPair(pu, tv, depth);
-                std::cout << "Recurse into match with depth " << depth + 1 << std::endl;
+            if (feasible(pu, tv)) {
+                oldNodePairDepthStamps = addPair(pu, tv, depth);
                 continueSearch = match(depth + 1);
-                removePair(pu, tv, depth, helperVector);
+                // Remove pair independent of outcome and abort search if it must be stopped
+                removePair(pu, tv, depth, oldNodePairDepthStamps);
                 if (!continueSearch) {
                     return false;
                 }
@@ -210,20 +148,6 @@ private:
     /**
      * Produce the next candidate pair to try at this depth.
      *
-     * TODO: implement.
-     *  1. If both out-terminal sets are non-empty, pair the smallest unmapped pattern node in
-     *     the pattern's out-terminal set with each target node in the target's out-terminal set.
-     *  2. Otherwise, if both in-terminal sets are non-empty, do the same with those.
-     *  3. Otherwise the mapping is not connected to anything, so fall back to the smallest
-     *     unmapped pattern node paired with every unmapped target node.
-     *  Fixing the pattern node and only varying the target node is what keeps the search tree
-     *  from exploding: every candidate at a given depth extends the same pattern node.
-     *
-     *  Reuse: the terminal sets are stored as depth stamps here rather than as real sets, so
-     *  enumerating them means scanning. If that scan shows up in profiles, MaximalCliques.cpp
-     *  solves the same problem with pxvector/pxlookup and swapNodeToPos() - one buffer partitioned
-     *  by index boundaries, swapped in place, no allocation anywhere in the recursion.
-     *
      * @param depth Current search depth.
      * @param cursor In/out: where the previous call stopped, so iteration can resume.
      * @param pu Out: the pattern node to map.
@@ -231,27 +155,17 @@ private:
      * @return false when the candidates at this depth are exhausted.
      */
     bool nextCandidatePair(count depth, index &cursor, node &pu, node &tv) const {
-        /*tlx::unused(depth, cursor, pu, tv);
-        throw std::logic_error("VF2Impl::nextCandidatePair() is not implemented yet");*/
 
-        // FIX depth parameter is never used
-        // FIX repetitive structure
+        if (t1out != 0 && t2out != 0) {
 
-        std::cout << "Search for candidates at depth " << depth << std::endl;
-        std::cout << "Cursor is " << cursor << std::endl;
-
-        if ((t1out != 0) && (t2out != 0)) {
-            std::cout << "Both out-terminal sets are non-empty" << std::endl;
             // Find smallest unmapped pattern node in out1
-            // TODO Is it right to search pu repeatedly?
             for (index u = 0; u < core1.size(); ++u) {
                 if (patternGraph.hasNode(u) && core1[u] == none && out1[u] != 0) {
                     pu = u;
                     break;
                 }
             }
-
-            // Pair with each unmapped target node in out2
+            // Pair with every unmapped target node in out2
             for (index v = cursor; v < core2.size(); ++v) {
                 if (targetGraph.hasNode(v) && core2[v] == none && out2[v] != 0) {
                     tv = v;
@@ -259,20 +173,19 @@ private:
                     return true;
                 }
             }
-            std::cout << "Cursor out of bounds." << std::endl;
+
             return false;
-        } else if ((t1in != 0) && (t2in != 0)) {
-            std::cout << "Both in-terminal sets are non-empty" << std::endl;
+
+        } else if (t1in != 0 && t2in != 0) {
+
             // Find smallest unmapped pattern node in in1
-            // TODO Is it right to search pu repeatedly?
             for (index u = 0; u < core1.size(); ++u) {
                 if (patternGraph.hasNode(u) && core1[u] == none && in1[u] != 0) {
                     pu = u;
                     break;
                 }
             }
-
-            // Pair with each unmapped target node in in2
+            // Pair with every unmapped target node in in2
             for (index v = cursor; v < core2.size(); ++v) {
                 if (targetGraph.hasNode(v) && core2[v] == none && in2[v] != 0) {
                     tv = v;
@@ -280,21 +193,19 @@ private:
                     return true;
                 }
             }
-            std::cout << "Cursor out of bounds." << std::endl;
 
             return false;
+
         } else {
-            std::cout << "At least one out- and in-terminal set are empty" << std::endl;
-            // Find smallest unmapped pattern node in in1
-            // TODO Is it right to search pu repeatedly?
+
+            // Find smallest unmapped pattern node
             for (index u = 0; u < core1.size(); ++u) {
                 if (patternGraph.hasNode(u) && core1[u] == none) {
                     pu = u;
                     break;
                 }
             }
-
-            // Pair with each unmapped target node in in2
+            // Pair with every unmapped target node
             for (index v = cursor; v < core2.size(); ++v) {
                 if (targetGraph.hasNode(v) && core2[v] == none) {
                     tv = v;
@@ -302,9 +213,6 @@ private:
                     return true;
                 }
             }
-            std::cout << "Cursor out of bounds." << std::endl;
-
-            return false;
         }
 
         return false;
@@ -312,32 +220,21 @@ private:
 
     /**
      * Whether the pair (@a pu, @a tv) may be added to the mapping.
-     *
-     * TODO: implement by calling the five rules below in increasing order of cost, returning
-     * false at the first that fails. Cheap rejections first is the whole point.
      */
-    bool feasible(node pu, node tv, count depth) const {
-        /*tlx::unused(pu, tv, depth);
-        throw std::logic_error("VF2Impl::feasible() is not implemented yet");*/
-
-        // TODO remove depth parameter is never used but also the five rules dont use it?
+    bool feasible(node pu, node tv) const {
 
         return ruleSuccessors(pu, tv) && rulePredecessors(pu, tv) && ruleTerminalCounts(pu, tv)
                && ruleNewCounts(pu, tv) && ruleLabels(pu, tv);
     }
 
     /**
-     * Consistency rule for out-edges.
-     *
-     * TODO: implement. For every out-neighbour of @a pu that is already mapped, the target must
-     * contain the corresponding edge out of @a tv. Under Semantics::INDUCED the converse is also
-     * required: every mapped out-neighbour of @a tv must correspond to an out-neighbour of
-     * @a pu, which is what forbids extra target edges. Under MONOMORPHISM that half is skipped.
+     * Consistency rule for out-edges. For every out-neighbour of @a pu that is already mapped, the
+     * target must contain the corresponding edge out of @a tv.
      */
     bool ruleSuccessors(node pu, node tv) const {
-        /*tlx::unused(pu, tv);
-        throw std::logic_error("VF2Impl::ruleSuccessors() is not implemented yet");*/
 
+        // Check for every mapped out-neighbor of pu if the target has the corresponding edge out of
+        // tv
         for (auto it = patternGraph.outBegin(pu); it != patternGraph.outEnd(pu); ++it) {
             node u = *it;
             if (core1[u] != none) {
@@ -347,9 +244,9 @@ private:
             }
         }
 
-        // FIX Optional: Could do degree equality check for induced case and reject if not equal
+        // Under Semantics::INDUCED: Check for every mapped out-neighbor of tv if the pattern has
+        // the corresponding edge out of pu
         if (semantics == SubgraphIsomorphism::Semantics::INDUCED) {
-
             for (auto it = targetGraph.outBegin(tv); it != targetGraph.outEnd(tv); ++it) {
                 node v = *it;
                 if (core2[v] != none) {
@@ -364,19 +261,18 @@ private:
     }
 
     /**
-     * Consistency rule for in-edges. The mirror image of @ref ruleSuccessors().
-     *
-     * TODO: implement. For an undirected graph this is the same test as ruleSuccessors(), so it
-     * can return true immediately and let that one do the work.
+     * Consistency rule for in-edges. The mirror image of @ref ruleSuccessors(). For every
+     * in-neighbour of @a pu that is already mapped, the target must contain the corresponding edge
+     * into @a tv.
      */
     bool rulePredecessors(node pu, node tv) const {
-        /*tlx::unused(pu, tv);
-        throw std::logic_error("VF2Impl::rulePredecessors() is not implemented yet");*/
 
+        // If undirected, in-neighbors=out-neighbors, return true immediately
         if (!patternGraph.isDirected()) {
             return true;
         }
 
+        // Check for every mapped in-neighbor of pu if the target has the corresponding edge into tv
         for (auto it = patternGraph.inBegin(pu); it != patternGraph.inEnd(pu); ++it) {
             node u = *it;
             if (core1[u] != none) {
@@ -386,7 +282,8 @@ private:
             }
         }
 
-        // FIX Optional: Could do degree equality check for induced case and reject if not equal
+        // Under Semantics::INDUCED: Check for every mapped in-neighbor of tv if the pattern has the
+        // corresponding edge into pu
         if (semantics == SubgraphIsomorphism::Semantics::INDUCED) {
             for (auto it = targetGraph.inBegin(tv); it != targetGraph.inEnd(tv); ++it) {
                 node v = *it;
@@ -402,57 +299,49 @@ private:
     }
 
     /**
-     * One-step look-ahead on the terminal sets.
-     *
-     * TODO: implement. Count how many neighbours of @a pu lie in each pattern terminal set and
-     * how many neighbours of @a tv lie in the corresponding target terminal set. If the pattern
-     * count ever exceeds the target count, there will not be enough target nodes left to map
-     * them onto, so reject now rather than discovering it several levels deeper.
+     * One-step look-ahead on the terminal sets. Count unmapped, out- and in-neighbors of pu and tv
+     * that are part of a terminal set and return false if the pattern count exceeds the target
+     * count.
      */
     bool ruleTerminalCounts(node pu, node tv) const {
-        /*tlx::unused(pu, tv);
-        throw std::logic_error("VF2Impl::ruleTerminalCounts() is not implemented yet");*/
 
         count in1Neighbors = 0;
         count out1Neighbors = 0;
         count in2Neighbors = 0;
         count out2Neighbors = 0;
 
-        for (auto it = patternGraph.outBegin(pu); it != patternGraph.outEnd(pu); ++it) {
-            node u = *it;
-            if (core1[u] == none && out1[u] != 0) {
-                out1Neighbors++;
-            }
-        }
-
+        // Count unmapped, out-terminal out-neighbors of tv and pu
         for (auto it = targetGraph.outBegin(tv); it != targetGraph.outEnd(tv); ++it) {
             node v = *it;
             if (core2[v] == none && out2[v] != 0) {
                 out2Neighbors++;
             }
         }
-
-        if (out1Neighbors > out2Neighbors) {
-            return false;
-        }
-
-        if (patternGraph.isDirected()) {
-            for (auto it = patternGraph.inBegin(pu); it != patternGraph.inEnd(pu); ++it) {
-                node u = *it;
-                if (core1[u] == none && in1[u] != 0) {
-                    in1Neighbors++;
+        for (auto it = patternGraph.outBegin(pu); it != patternGraph.outEnd(pu); ++it) {
+            node u = *it;
+            if (core1[u] == none && out1[u] != 0) {
+                // Return false if pu has more such neighbors than tv
+                if (++out1Neighbors > out2Neighbors) {
+                    return false;
                 }
             }
+        }
 
+        // If directed, do the same for in-neighbors
+        if (patternGraph.isDirected()) {
             for (auto it = targetGraph.inBegin(tv); it != targetGraph.inEnd(tv); ++it) {
                 node v = *it;
                 if (core2[v] == none && in2[v] != 0) {
                     in2Neighbors++;
                 }
             }
-
-            if (in1Neighbors > in2Neighbors) {
-                return false;
+            for (auto it = patternGraph.inBegin(pu); it != patternGraph.inEnd(pu); ++it) {
+                node u = *it;
+                if (core1[u] == none && in1[u] != 0) {
+                    if (++in1Neighbors > in2Neighbors) {
+                        return false;
+                    }
+                }
             }
         }
 
@@ -460,17 +349,13 @@ private:
     }
 
     /**
-     * Two-step look-ahead on the nodes outside both the mapping and the terminal sets.
-     *
-     * TODO: implement. Same idea as @ref ruleTerminalCounts(), but counting the neighbours that
-     * are in neither the mapping nor any terminal set. Only meaningful under
-     * Semantics::INDUCED; return true immediately for MONOMORPHISM, where extra target edges are
-     * allowed and the counting argument does not hold.
+     * Two-step look-ahead on the nodes outside both the mapping and the terminal sets. Count
+     * unmapped out- and in-neighbors of pu and tv that are not part of any terminal set and return
+     * false if the pattern count exceeds the target count.
      */
     bool ruleNewCounts(node pu, node tv) const {
-        /*tlx::unused(pu, tv);
-        throw std::logic_error("VF2Impl::ruleNewCounts() is not implemented yet");*/
 
+        // Semantics::MONOMORPHISM allows extra target edges, return true immediately
         if (semantics == SubgraphIsomorphism::Semantics::MONOMORPHISM) {
             return true;
         }
@@ -480,41 +365,38 @@ private:
         count in2Neighbors = 0;
         count out2Neighbors = 0;
 
-        for (auto it = patternGraph.outBegin(pu); it != patternGraph.outEnd(pu); ++it) {
-            node u = *it;
-            if (core1[u] == none && in1[u] == 0 && out1[u] == 0) {
-                out1Neighbors++;
-            }
-        }
-
+        // Count unmapped, non-terminal out-neighbors of tv and pu
         for (auto it = targetGraph.outBegin(tv); it != targetGraph.outEnd(tv); ++it) {
             node v = *it;
             if (core2[v] == none && in2[v] == 0 && out2[v] == 0) {
                 out2Neighbors++;
             }
         }
-
-        if (out1Neighbors > out2Neighbors) {
-            return false;
-        }
-
-        if (patternGraph.isDirected()) {
-            for (auto it = patternGraph.inBegin(pu); it != patternGraph.inEnd(pu); ++it) {
-                node u = *it;
-                if (core1[u] == none && in1[u] == 0 && out1[u] == 0) {
-                    in1Neighbors++;
+        for (auto it = patternGraph.outBegin(pu); it != patternGraph.outEnd(pu); ++it) {
+            node u = *it;
+            if (core1[u] == none && in1[u] == 0 && out1[u] == 0) {
+                // Return false if pu has more such neighbors than tv
+                if (++out1Neighbors > out2Neighbors) {
+                    return false;
                 }
             }
+        }
 
+        // If directed, do the same for in-neighbors
+        if (patternGraph.isDirected()) {
             for (auto it = targetGraph.inBegin(tv); it != targetGraph.inEnd(tv); ++it) {
                 node v = *it;
                 if (core2[v] == none && in2[v] == 0 && out2[v] == 0) {
                     in2Neighbors++;
                 }
             }
-
-            if (in1Neighbors > in2Neighbors) {
-                return false;
+            for (auto it = patternGraph.inBegin(pu); it != patternGraph.inEnd(pu); ++it) {
+                node u = *it;
+                if (core1[u] == none && in1[u] == 0 && out1[u] == 0) {
+                    if (++in1Neighbors > in2Neighbors) {
+                        return false;
+                    }
+                }
             }
         }
 
@@ -522,15 +404,11 @@ private:
     }
 
     /**
-     * Label rule.
-     *
-     * TODO: implement. Return true immediately when the search is unlabelled. Otherwise the two
+     * Label rule. Return true immediately if the search is unlabelled. Otherwise the two
      * labels must be equal, except that @ref none on either side is a wildcard that matches
      * anything.
      */
     bool ruleLabels(node pu, node tv) const {
-        /*tlx::unused(pu, tv);
-        throw std::logic_error("VF2Impl::ruleLabels() is not implemented yet");*/
 
         if (!labelled) {
             return true;
@@ -542,37 +420,29 @@ private:
         }
 
         return false;
-
-        // FIX Do we want to do neighbor label checks here?
     }
 
     /**
      * Add (@a pu, @a tv) to the mapping and update the four terminal sets.
      *
-     * TODO: implement.
-     *  1. Set core1[pu] = tv and core2[tv] = pu.
-     *  2. Remove both from the terminal sets they were in, adjusting the sizes.
-     *  3. For every neighbour of pu and of tv that is not yet mapped and not yet in the relevant
-     *     terminal set, record @a depth as its entry depth and bump the size. Storing the depth
-     *     rather than a flag is what makes removePair() able to undo exactly this step.
+     * @return oldNodePairDepthStamps depth stamps @a pu and @a tv had before
+     * addPair(pu, tv) removed them from any terminal sets that they were part of
      */
     std::vector<count> addPair(node pu, node tv, count depth) {
-        /*tlx::unused(pu, tv, depth);
-        throw std::logic_error("VF2Impl::addPair() is not implemented yet");*/
 
-        std::vector<count> returnVector(4, 0);
+        // Save at which depth pu and tv were added to their respective terminal sets
+        std::vector<count> oldNodePairDepthStamps(4, 0);
+        oldNodePairDepthStamps[0] = in1[pu];
+        oldNodePairDepthStamps[1] = out1[pu];
+        oldNodePairDepthStamps[2] = in2[tv];
+        oldNodePairDepthStamps[3] = out2[tv];
 
-        returnVector[0] = in1[pu];
-        returnVector[1] = out1[pu];
-        returnVector[2] = in2[tv];
-        returnVector[3] = out2[tv];
-
-        std::cout << "Add pair (" << pu << "," << tv << ") at depth " << depth << std::endl;
-
+        // Map pu and tv onto each other
         core1[pu] = tv;
         core2[tv] = pu;
 
-        // Remove pu and tv from any terminal sets that they are part of
+        // Remove pu and tv from any terminal sets that they are part of by resetting their depth
+        // stamps to zero
         if (in1[pu] != 0) {
             in1[pu] = 0;
             t1in--;
@@ -590,8 +460,8 @@ private:
             t2out--;
         }
 
-        // Now that pu and tv are mapped, their unmapped neighbors become part of the terminal sets
-        // (if not already)
+        // Unmapped neighbors of pu and tv are added to the respective terminal sets
+        // If undirected, iterating over out-neighbors is sufficient, because in1=out1 and in2=out2
         for (auto it = patternGraph.outBegin(pu); it != patternGraph.outEnd(pu); ++it) {
             node u = *it;
             if (core1[u] == none && out1[u] == 0) {
@@ -618,6 +488,7 @@ private:
             }
         }
 
+        // If directed, iterate over inNeighbors separately
         if (patternGraph.isDirected()) {
             for (auto it = patternGraph.inBegin(pu); it != patternGraph.inEnd(pu); ++it) {
                 node u = *it;
@@ -636,47 +507,19 @@ private:
             }
         }
 
-        std::cout << "core1: ";
-        printVector(core1);
-
-        std::cout << "core2: ";
-        printVector(core2);
-
-        std::cout << "in1: ";
-        printVector(in1);
-
-        std::cout << "out1: ";
-        printVector(out1);
-
-        std::cout << "in2: ";
-        printVector(in2);
-
-        std::cout << "out2: ";
-        printVector(out2);
-
-        return returnVector;
+        return oldNodePairDepthStamps;
     }
 
     /**
      * Undo @ref addPair() exactly.
-     *
-     * TODO: implement. Reset core1[pu] and core2[tv] to `none`, and clear every terminal-set
-     * entry whose recorded depth equals @a depth, restoring the sizes. Because entries are
-     * stamped with the depth that created them, this touches only what this level added.
      */
-    void removePair(node pu, node tv, count depth, std::vector<count> helperVector) {
-        /*tlx::unused(pu, tv, depth);
-        throw std::logic_error("VF2Impl::removePair() is not implemented yet");*/
+    void removePair(node pu, node tv, count depth, std::vector<count> oldNodePairDepthStamps) {
 
-        // FIX What if depth == 0? Think about wether this is a problem...
-        // When we added added (pu,tv) to the mapping, we removed them from the terminal sets and
-        // set their stamps to zero, how can we restore the correct depth stamps
-
-        std::cout << "Remove pair (" << pu << "," << tv << ") at depth " << depth << std::endl;
-
+        // Unmap pu and tv
         core1[pu] = none;
         core2[tv] = none;
 
+        // Remove all nodes from the terminal sets that were added as a result of addPair(pu, tv)
         for (index u = 0; u < in1.size(); ++u) {
             if (in1[u] == depth) {
                 in1[u] = 0;
@@ -699,53 +542,31 @@ private:
             }
         }
 
-        if (helperVector[0] != 0) {
-            in1[pu] = helperVector[0];
+        // If pu or tv were part of any terminal sets before addPair(pu, tv), restore their old
+        // depth stamps
+        if (oldNodePairDepthStamps[0] != 0) {
+            in1[pu] = oldNodePairDepthStamps[0];
             t1in++;
         }
-        if (helperVector[1] != 0) {
-            out1[pu] = helperVector[1];
+        if (oldNodePairDepthStamps[1] != 0) {
+            out1[pu] = oldNodePairDepthStamps[1];
             t1out++;
         }
-        if (helperVector[2] != 0) {
-            in2[tv] = helperVector[2];
+        if (oldNodePairDepthStamps[2] != 0) {
+            in2[tv] = oldNodePairDepthStamps[2];
             t2in++;
         }
-        if (helperVector[3] != 0) {
-            out2[tv] = helperVector[3];
+        if (oldNodePairDepthStamps[3] != 0) {
+            out2[tv] = oldNodePairDepthStamps[3];
             t2out++;
         }
-
-        std::cout << "core1: ";
-        printVector(core1);
-
-        std::cout << "core2: ";
-        printVector(core2);
-
-        std::cout << "in1: ";
-        printVector(in1);
-
-        std::cout << "out1: ";
-        printVector(out1);
-
-        std::cout << "in2: ";
-        printVector(in2);
-
-        std::cout << "out2: ";
-        printVector(out2);
     }
 
     /**
-     * Hand a complete mapping over.
-     *
-     * TODO: implement. Copy core1 into `mapping` for the pattern nodes that exist, then return
-     * report(mapping). Reuse the same buffer every time; the reporter copies it if it needs to.
+     * Hand a complete mapping over. Copy core1 into 'mapping' for the pattern nodes that exist,
+     * then return report(mapping)
      */
     bool reportMapping() {
-
-        // FIX Hier kann es sein, dass das leere Mapping reported wird
-
-        // throw std::logic_error("VF2Impl::reportMapping() is not implemented");
 
         for (index u = 0; u < mapping.size(); ++u) {
             if (patternGraph.hasNode(u)) {
