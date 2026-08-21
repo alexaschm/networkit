@@ -59,8 +59,9 @@ namespace NetworKit {
  * 1. **Construct** with the pattern, the target, the semantics and an optional cap on how many
  *    matches you want.
  * 2. **Configure**, if you need to: @ref setLabels() to restrict matches to nodes that carry the
- *    same label, @ref setCallback() to be handed each match as it is found instead of collecting
- *    them, @ref setStoreMatches() to only count matches without keeping them.
+ *    same label, @ref setEdgeLabels() to do the same for edges, @ref setCallback() to be handed
+ *    each match as it is found instead of collecting them, @ref setStoreMatches() to only count
+ *    matches without keeping them.
  * 3. **Run** with @ref run().
  * 4. **Query** with @ref getMatches(), @ref numberOfMatches() or @ref hasMatch().
  *
@@ -109,6 +110,37 @@ namespace NetworKit {
  * labels, the semantics, the result store, the callbacks, and the cap on the number of matches.
  * A concrete algorithm therefore only has to implement @ref run(). See the protected section for
  * the protocol that @ref run() has to follow.
+ *
+ * ## Ideas for later
+ *
+ * Things left out on purpose, recorded so the next reader can tell a decision from an
+ * oversight.
+ *
+ * - **Parallel edges whose labels disagree.** @ref setEdgeLabels() refuses these today. The
+ *   search runs on a snapshot that collapses repeated neighbours, which is what keeps degrees
+ *   honest and stops the same candidate being enumerated twice; collapsing two arcs whose
+ *   labels differ would quietly answer a different question. Supporting them does *not* mean
+ *   giving the collapse up. It means giving each collapsed arc a **set** of labels instead of
+ *   one, and reading "pattern edge with label l matches" as "the image pair carries some
+ *   compatible label". The structural snapshot is untouched, so degree pruning and candidate
+ *   enumeration are unaffected and no match can be reported twice; only the label comparison
+ *   widens from equality to set intersection. That is enough for multi-relational graphs, where
+ *   a pair of nodes is joined by several differently-typed edges.
+ *
+ *   The stronger reading - every pattern edge matched by its *own distinct* target edge - is a
+ *   different problem, not a bigger version of this one. It turns each accepted node pair into
+ *   a small bipartite matching, and a match is an array of node images, so it could report
+ *   *that* an assignment exists but never *which*. `Graph::edgeId(u, v)` cannot name the second
+ *   parallel edge either. That variant needs its own result type and its own reference matcher.
+ *
+ * - **Labels as graph attributes.** @ref setLabels() and @ref setEdgeLabels() both take flat
+ *   vectors, which predates `Attributes.hpp`. Naming an `index`-typed node or edge attribute
+ *   instead would be a friendlier API and would let labels travel with the graph through copies.
+ *   It would change only how labels are *supplied*: the search probes them in its innermost
+ *   loop, so a setter would still materialise them into flat vectors once rather than paying a
+ *   hash lookup per probe. One gap to close first - `AdjListGraph`'s typed convenience wrappers
+ *   cover `int`, `double` and `std::string` only, so an `index`-typed attribute is not reachable
+ *   from Python until those gain an `index`-typed sibling.
  */
 class SubgraphIsomorphism : public Algorithm {
 
@@ -208,6 +240,36 @@ public:
      * @param targetLabels Labels of the target nodes, indexed by node id.
      */
     void setLabels(const std::vector<index> &patternLabels, const std::vector<index> &targetLabels);
+
+    /**
+     * Only accept matches that map like-labelled edges onto each other.
+     *
+     * This is the edge-side counterpart of @ref setLabels(), and it is what a multi-relational
+     * graph needs: when the same pair of nodes can be joined by a "cites", a "co-authors" and a
+     * "rebuts" edge, "this pattern edge must land on a target edge of the same kind" is not
+     * expressible with node labels alone.
+     *
+     * Both vectors are indexed by **edge id**, not by node id, so both graphs must have had
+     * `indexEdges()` called on them and each vector must have at least `upperEdgeIdBound()`
+     * entries for its graph; otherwise `std::runtime_error` is thrown. The special value
+     * @ref none acts as a wildcard and matches any label, on either side. Passing two empty
+     * vectors clears the edge labels, exactly as @ref setLabels() does for node labels.
+     *
+     * Two limits, both deliberate and both raised as `std::runtime_error` rather than answered
+     * wrongly. **Parallel edges whose labels disagree are refused** - the search runs on a
+     * snapshot that collapses repeated neighbours, so there is no one label for the collapsed
+     * arc to carry; this is detected while that snapshot is built, so it surfaces from
+     * @ref run() rather than from here. And **not every algorithm understands edge labels yet**:
+     * @ref VF2 and @ref VF3 refuse them outright from @ref run(). See "Ideas for later" in the
+     * class documentation for what lifting the first limit would take.
+     *
+     * Call this before @ref run().
+     *
+     * @param patternEdgeLabels Labels of the pattern edges, indexed by edge id.
+     * @param targetEdgeLabels Labels of the target edges, indexed by edge id.
+     */
+    void setEdgeLabels(const std::vector<index> &patternEdgeLabels,
+                       const std::vector<index> &targetEdgeLabels);
 
     /**
      * Hand each match to @a callback as it is found, rather than collecting them.
@@ -318,7 +380,10 @@ protected:
     // exception escaping an OpenMP structured block is undefined behaviour - see Betweenness.cpp,
     // which is the pattern to copy.
     //
-    // Use isLabelled() to find out whether labels are in play.
+    // Use isLabelled() to find out whether node labels are in play, and isEdgeLabelled() for edge
+    // labels. The module's rule about the latter is: refuse edge labels outright in the algorithms
+    // that will not understand them, and refuse only disagreeing parallel edges in the ones that
+    // will. VF2 and VF3 do the former, RI and ParallelRI the latter.
     //
     // The search itself belongs in a separate implementation class in the .cpp file, so that the
     // public header never grows a member. Those classes are not subclasses and so cannot reach
@@ -339,6 +404,15 @@ protected:
      * @return true if @ref setLabels() was used, so the search has to compare labels.
      */
     bool isLabelled() const noexcept { return !patternLabels.empty(); }
+
+    /**
+     * @return true if @ref setEdgeLabels() was used, so the search has to compare edge labels.
+     *
+     * An algorithm that cannot honour edge labels must throw from @ref run() when this is true.
+     * Reporting matches that violate an edge label the caller asked for, with nothing to say so,
+     * is the one failure worse than refusing.
+     */
+    bool isEdgeLabelled() const noexcept { return !patternEdgeLabels.empty(); }
 
     /**
      * @return true if a callback of either form was set.
@@ -433,6 +507,11 @@ protected:
     std::vector<index> patternLabels;
     /// Empty unless setLabels() was used. Indexed by node id.
     std::vector<index> targetLabels;
+
+    /// Empty unless setEdgeLabels() was used. Indexed by **edge** id, not node id.
+    std::vector<index> patternEdgeLabels;
+    /// Empty unless setEdgeLabels() was used. Indexed by **edge** id, not node id.
+    std::vector<index> targetEdgeLabels;
 
     Semantics semantics;
     /// 0 means no limit.

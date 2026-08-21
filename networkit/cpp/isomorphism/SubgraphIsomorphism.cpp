@@ -81,6 +81,37 @@ void SubgraphIsomorphism::setLabels(const std::vector<index> &patternLabels,
     this->targetLabels = targetLabels;
 }
 
+void SubgraphIsomorphism::setEdgeLabels(const std::vector<index> &patternEdgeLabels,
+                                        const std::vector<index> &targetEdgeLabels) {
+    // Tested first, or the size checks below would reject the documented way of clearing.
+    if (patternEdgeLabels.empty() && targetEdgeLabels.empty()) {
+        this->patternEdgeLabels.clear();
+        this->targetEdgeLabels.clear();
+        return;
+    }
+
+    // Edge labels are indexed by edge id, so without ids there is no index space for the vector at
+    // all. Saying that here beats whatever the search would fail on later.
+    if (!pattern->hasEdgeIds())
+        throw std::runtime_error("Pattern graph has no edge ids - call indexEdges() on it before "
+                                 "setting edge labels");
+
+    if (!target->hasEdgeIds())
+        throw std::runtime_error("Target graph has no edge ids - call indexEdges() on it before "
+                                 "setting edge labels");
+
+    if (patternEdgeLabels.size() < pattern->upperEdgeIdBound())
+        throw std::runtime_error("Pattern edge label vector is shorter than the pattern's "
+                                 "upperEdgeIdBound()");
+
+    if (targetEdgeLabels.size() < target->upperEdgeIdBound())
+        throw std::runtime_error("Target edge label vector is shorter than the target's "
+                                 "upperEdgeIdBound()");
+
+    this->patternEdgeLabels = patternEdgeLabels;
+    this->targetEdgeLabels = targetEdgeLabels;
+}
+
 void SubgraphIsomorphism::setCallback(MatchCallback callback) {
     this->callback = std::move(callback);
     parallelCallback = nullptr;
