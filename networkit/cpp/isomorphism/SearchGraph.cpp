@@ -1,6 +1,8 @@
 #include <algorithm>
 #include <cstddef>
 #include <numeric>
+#include <stdexcept>
+#include <utility>
 #include <vector>
 
 #include <networkit/auxiliary/Log.hpp>
@@ -24,6 +26,44 @@ namespace {
 constexpr count maxMatrixNodes = 23170;
 
 /**
+ * Sort every slice of a CSR ascending by neighbour, keeping the parallel label array aligned.
+ *
+ * Without labels this is a plain sort over the heads. With them the two arrays have to move
+ * together: a label is identified by *where it sits*, so sorting the heads on their own would hand
+ * every arc some other arc's label, silently and without any of it failing to compile or crash.
+ * Sorting (head, label) pairs and unzipping is the least error-prone way to say that, and the
+ * scratch buffer is reused across nodes so it costs one allocation for the whole graph.
+ */
+void sortSlices(const std::vector<index> &first, std::vector<node> &head, std::vector<index> &label,
+                count z) {
+    if (label.empty()) {
+        // Sorting over pointers rather than iterators keeps the offsets unsigned.
+        for (node u = 0; u < z; ++u)
+            std::sort(head.data() + first[u], head.data() + first[u + 1]);
+        return;
+    }
+
+    std::vector<std::pair<node, index>> slice;
+    for (node u = 0; u < z; ++u) {
+        const index begin = first[u];
+        const index end = first[u + 1];
+
+        slice.clear();
+        for (index i = begin; i < end; ++i)
+            slice.emplace_back(head[i], label[i]);
+
+        // Lexicographic, so parallel arcs land next to each other in a defined order rather than
+        // whichever one the scatter happened to write first.
+        std::sort(slice.begin(), slice.end());
+
+        for (index i = begin; i < end; ++i) {
+            head[i] = slice[i - begin].first;
+            label[i] = slice[i - begin].second;
+        }
+    }
+}
+
+/**
  * Drop self-loops and collapse parallel edges in a sorted CSR, in place.
  *
  * Both are meaningless to a subgraph search - the two matching semantics only ever constrain
@@ -32,9 +72,18 @@ constexpr count maxMatrixNodes = 23170;
  * inflates the degrees that every feasibility rule prunes on.
  *
  * The slices are already sorted, so equal entries are adjacent and one linear scan suffices.
- * Compaction happens in place because the write cursor can never overtake the read cursor.
+ * Compaction happens in place because the write cursor can never overtake the read cursor. The
+ * label array is carried along for the same reason the sort has to carry it: it is indexed by
+ * position, so moving a head without its label corrupts both.
+ *
+ * @return true if a collapsed run of equal heads held labels that were not all equal, so that the
+ *         one arc left cannot stand for all of them. Always false without labels.
  */
-void compactSlices(std::vector<index> &first, std::vector<node> &head, count z) {
+bool compactSlices(std::vector<index> &first, std::vector<node> &head, std::vector<index> &label,
+                   count z) {
+    const bool labelled = !label.empty();
+    bool lost = false;
+
     index write = 0;
     for (node u = 0; u < z; ++u) {
         const index begin = first[u];
@@ -44,22 +93,49 @@ void compactSlices(std::vector<index> &first, std::vector<node> &head, count z) 
         node previous = none;
         for (index i = begin; i < end; ++i) {
             const node v = head[i];
-            if (v == u || v == previous)
+            if (v == u)
                 continue;
+            if (v == previous) {
+                // Equal heads are adjacent after the sort, so the label this one is being dropped
+                // in favour of is simply the one just written.
+                if (labelled && label[i] != label[write - 1])
+                    lost = true;
+                continue;
+            }
             previous = v;
-            head[write++] = v;
+            if (labelled)
+                label[write] = label[i];
+            head[write] = v;
+            ++write;
         }
     }
 
     first[z] = write;
     head.resize(write);
+    if (labelled)
+        label.resize(write);
+
+    return lost;
 }
 
 } // namespace
 
-SearchGraph::SearchGraph(const Graph &G, bool buildMatrix)
-    : matrixStride(0), maxOut(0), maxIn(0), n(G.numberOfNodes()), z(G.upperNodeIdBound()),
-      directed(G.isDirected()), hasMatrix(buildMatrix) {
+SearchGraph::SearchGraph(const Graph &G, bool buildMatrix, const std::vector<index> &edgeLabels)
+    : lostLabels(false), maxOut(0), maxIn(0), matrixStride(0), n(G.numberOfNodes()),
+      z(G.upperNodeIdBound()), directed(G.isDirected()), hasMatrix(buildMatrix) {
+    // Labels are indexed by edge id, so the scatter below reads edgeLabels[eid] for every arc.
+    // Without ids that index does not exist and without enough entries it runs off the end, so
+    // both are refused here rather than read past. SubgraphIsomorphism::setEdgeLabels() checks the
+    // same two things; this is what keeps a snapshot built any other way honest.
+    if (!edgeLabels.empty()) {
+        if (!G.hasEdgeIds())
+            throw std::runtime_error("SearchGraph: edge labels need a graph with edge ids - call "
+                                     "indexEdges() on it first");
+        if (edgeLabels.size() < G.upperEdgeIdBound())
+            throw std::runtime_error(
+                "SearchGraph: edge label vector is shorter than the graph's upperEdgeIdBound()");
+    }
+
     // The matrix is a request, not a demand: when it will not fit, drop it and let hasEdge() use
     // the CSR, which is how every target snapshot already works. Note the bound is the *id* bound,
     // and removeNode() lowers neither it nor the ids above it, so a small pattern carved out of a
@@ -80,12 +156,14 @@ SearchGraph::SearchGraph(const Graph &G, bool buildMatrix)
         hasMatrix = false;
     }
 
-    buildCSR(G);
+    buildCSR(G, edgeLabels);
     if (hasMatrix)
         buildAdjacencyMatrix(G);
 }
 
-void SearchGraph::buildCSR(const Graph &G) {
+void SearchGraph::buildCSR(const Graph &G, const std::vector<index> &edgeLabels) {
+    const bool labelled = !edgeLabels.empty();
+
     // Count the out-degree of every node into outFirst[u + 1], then turn the counts into start
     // offsets with a prefix sum. A node that was removed keeps a degree of 0 and so ends up with
     // an empty slice - indistinguishable from an isolated node by adjacency alone, which is why
@@ -103,21 +181,30 @@ void SearchGraph::buildCSR(const Graph &G) {
     // Place every neighbour into its node's slice. forEdges() visits an undirected edge once,
     // oriented u >= v, so the reverse orientation has to be added here - except for a self-loop,
     // which Graph stores only once and which degreeOut() therefore also counted only once.
+    //
+    // The four-argument overload hands out the edge id alongside the arc, which is what lets the
+    // label land at the same offset as its head in the very same pass. An undirected edge writes
+    // its one id into both endpoints' slices; a directed mutual pair is two ids in two different
+    // slices, so per-arc labels stay well defined either way.
     outHead.resize(outFirst[z]);
+    if (labelled)
+        outLabel.resize(outFirst[z], none);
     std::vector<index> cursor = outFirst;
-    G.forEdges([&](node u, node v) {
+    G.forEdges([&](node u, node v, edgeweight, edgeid eid) {
+        if (labelled)
+            outLabel[cursor[u]] = edgeLabels[eid];
         outHead[cursor[u]++] = v;
         if (!directed && u != v) {
+            if (labelled)
+                outLabel[cursor[v]] = edgeLabels[eid];
             outHead[cursor[v]++] = u;
         }
     });
 
     // hasEdge() binary-searches a slice and the feasibility rules intersect two of them, so both
-    // rely on the order. Sorting over pointers rather than iterators keeps the offsets unsigned.
-    for (node u = 0; u < z; ++u) {
-        std::sort(outHead.data() + outFirst[u], outHead.data() + outFirst[u + 1]);
-    }
-    compactSlices(outFirst, outHead, z);
+    // rely on the order.
+    sortSlices(outFirst, outHead, outLabel, z);
+    lostLabels |= compactSlices(outFirst, outHead, outLabel, z);
 
     // Only now are the slices the sets the search reasons about, so only now is the maximum the
     // number a caller may compare a pattern degree against.
@@ -137,13 +224,17 @@ void SearchGraph::buildCSR(const Graph &G) {
         std::partial_sum(inFirst.begin(), inFirst.end(), inFirst.begin());
 
         inHead.resize(inFirst[z]);
+        if (labelled)
+            inLabel.resize(inFirst[z], none);
         std::vector<index> inCursor = inFirst;
-        G.forEdges([&](node u, node v) { inHead[inCursor[v]++] = u; });
+        G.forEdges([&](node u, node v, edgeweight, edgeid eid) {
+            if (labelled)
+                inLabel[inCursor[v]] = edgeLabels[eid];
+            inHead[inCursor[v]++] = u;
+        });
 
-        for (node u = 0; u < z; ++u) {
-            std::sort(inHead.data() + inFirst[u], inHead.data() + inFirst[u + 1]);
-        }
-        compactSlices(inFirst, inHead, z);
+        sortSlices(inFirst, inHead, inLabel, z);
+        lostLabels |= compactSlices(inFirst, inHead, inLabel, z);
 
         for (node u = 0; u < z; ++u) {
             maxIn = std::max(maxIn, inDegree(u));

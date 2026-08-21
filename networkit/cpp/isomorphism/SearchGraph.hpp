@@ -69,6 +69,12 @@ inline count intersectionSize(const node *aBegin, const node *aEnd, const node *
  *   built for the *pattern*, which is small by assumption. Building it for a target with a
  *   million nodes would need 125 GB.
  *
+ * - Optionally a **label per arc**, at the same offset as the arc's head. Ask for it by handing
+ *   the constructor a label vector indexed by edge id; the snapshot re-indexes it into CSR order
+ *   once, so the search never has to go back to `Graph::edgeId()`. Because `outLabel[i]` belongs
+ *   to `outHead[i]`, filtering a slice by edge label costs one comparison per candidate and no
+ *   extra lookup. See @ref edgeLabel() and @ref outLabelBegin().
+ *
  * - A bit per id saying **whether it is a node at all**, behind @ref hasNode(). Removed ids keep
  *   an empty slice and so look exactly like isolated nodes; a search enumerating "every unmapped
  *   target node" has to be able to tell the two apart or it maps pattern nodes onto ids that do
@@ -91,6 +97,12 @@ inline count intersectionSize(const node *aBegin, const node *aEnd, const node *
  * `deg(target) >= deg(pattern)` test and silently discards real matches. `Graph::addEdge()`
  * permits parallel edges by default, so this is reachable without doing anything unusual.
  *
+ * Collapsing is lossless for structure, but not for edge labels: two parallel arcs carrying
+ * *different* labels become one arc that can only carry one of them. The snapshot does not try to
+ * paper over that. It collapses as usual and sets @ref collapsedLabelledEdges(), which is the flag
+ * every algorithm checks before it starts searching, so the caller gets a refusal instead of an
+ * answer to a question they did not ask. Parallel arcs whose labels *agree* collapse losslessly
+ * and raise nothing.
  *
  * ## Ownership
  *
@@ -110,8 +122,13 @@ public:
      *        only while @ref upperNodeIdBound() stays small, and quietly dropped otherwise, since
      *        the matrix is an accelerator that correctness never depends on. Ask
      *        @ref hasAdjacencyMatrix() what actually happened.
+     * @param edgeLabels One label per edge of @a G, indexed by **edge id**, or empty for an
+     *        unlabelled snapshot. @a G must then have `hasEdgeIds()`, and the vector must be at
+     *        least `upperEdgeIdBound()` long; both are what
+     *        `SubgraphIsomorphism::setEdgeLabels()` already checks, and both throw here too so
+     *        that a snapshot built any other way fails loudly rather than reading past its input.
      */
-    SearchGraph(const Graph &G, bool buildMatrix);
+    SearchGraph(const Graph &G, bool buildMatrix, const std::vector<index> &edgeLabels = {});
 
     /// Number of nodes that actually exist.
     count numberOfNodes() const noexcept { return n; }
@@ -195,6 +212,64 @@ public:
         return intersectionSize(outBegin(u), outEnd(u), outBegin(v), outEnd(v));
     }
 
+    /// Whether the snapshot was built with a label per arc.
+    bool hasEdgeLabels() const noexcept { return !outLabel.empty(); }
+
+    /**
+     * Whether collapsing parallel edges threw a label away.
+     *
+     * True only when a run of repeated neighbours carried labels that were *not* all equal, so
+     * that the one arc left over cannot stand for all of them. Collapsing equally-labelled
+     * parallel edges really is lossless and leaves this false, as does any graph without parallel
+     * edges - and so does an unlabelled snapshot, which has no labels to lose.
+     *
+     * An algorithm that honours edge labels must check this once, after building its snapshots and
+     * before searching, and refuse the input rather than answer a different question. Self-loops
+     * are not involved: they are dropped whatever their labels, and no matching rule ever looks at
+     * one.
+     */
+    bool collapsedLabelledEdges() const noexcept { return lostLabels; }
+
+    /**
+     * The label of the arc @a u -> @a v, or @ref none if there is no such arc or the snapshot is
+     * unlabelled.
+     *
+     * A binary search over the sorted out-slice, even when the bit matrix is available: the matrix
+     * answers *whether* an arc exists but knows no offset, and the offset is what the label sits
+     * at. Patterns are small, so the extra `log deg` is affordable; if it ever is not, the fix is a
+     * second matrix-indexed offset table rather than a different layout here.
+     *
+     * A directed mutual pair is two arcs with two ids in two different slices, so `edgeLabel(u, v)`
+     * and `edgeLabel(v, u)` are independent. For an undirected graph the one edge id was written
+     * into both endpoints' slices, so they agree.
+     */
+    index edgeLabel(node u, node v) const noexcept {
+        if (outLabel.empty())
+            return none;
+
+        const node *begin = outBegin(u);
+        const node *end = outEnd(u);
+        const node *found = std::lower_bound(begin, end, v);
+        if (found == end || *found != v)
+            return none;
+
+        return outLabel[outFirst[u] + static_cast<index>(found - begin)];
+    }
+
+    /// Labels of the out-arcs of @a u, one per entry of the @ref outBegin() slice and in the same
+    /// order. Null when the snapshot is unlabelled.
+    const index *outLabelBegin(node u) const noexcept {
+        return outLabel.empty() ? nullptr : outLabel.data() + outFirst[u];
+    }
+
+    /// Labels of the in-arcs of @a u, one per entry of the @ref inBegin() slice. For an undirected
+    /// graph this is the same as @ref outLabelBegin().
+    const index *inLabelBegin(node u) const noexcept {
+        if (!directed)
+            return outLabelBegin(u);
+        return inLabel.empty() ? nullptr : inLabel.data() + inFirst[u];
+    }
+
 private:
     /**
      * Fill outFirst/outHead, and inFirst/inHead when the graph is directed.
@@ -219,8 +294,16 @@ private:
      * CSRGeneralMatrix::adjacencyMatrix() really is a sorted CSR, but it stores a double per
      * entry with algebraic semantics, which is far more machinery than a boolean neighbour list
      * needs.
+     *
+     * With edge labels this pass also fills outLabel/inLabel. The four-argument `forEdges()`
+     * overload hands out the edge id per arc, so the label array is scattered by the same cursor
+     * that places the head - which is what makes `outLabel[i]` the label of `outHead[i]`. The sort
+     * and the compaction then have to move the two arrays *together*; sorting the heads alone
+     * would leave every arc holding some other arc's label, with nothing to warn anybody.
+     *
+     * @param edgeLabels Labels indexed by edge id, or empty for an unlabelled snapshot.
      */
-    void buildCSR(const Graph &G);
+    void buildCSR(const Graph &G, const std::vector<index> &edgeLabels);
 
     /**
      * Fill the bit-packed adjacency matrix: matrixStride 64-bit words per row, bit v of row u set
@@ -242,6 +325,15 @@ private:
     /// CSR in-edges. Empty for undirected graphs.
     std::vector<index> inFirst;
     std::vector<node> inHead;
+
+    /// One label per arc, at the same offset as its head in outHead/inHead. Both empty unless the
+    /// constructor was given edge labels; inLabel additionally empty when undirected, where
+    /// inLabelBegin() falls back to the out-arrays exactly as inBegin() does.
+    std::vector<index> outLabel;
+    std::vector<index> inLabel;
+
+    /// Whether collapsing parallel arcs discarded a label that differed from the one kept.
+    bool lostLabels;
 
     /// Whether each id below z is a node. Sized z, so a removed id can be told from an isolated
     /// one; both have an empty slice.
