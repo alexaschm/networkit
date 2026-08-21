@@ -405,8 +405,16 @@ void ParallelRI::run() {
     const count numWorkers = numberOfWorkers();
 
     // Built once and shared read-only by every worker.
-    const SearchGraph patternGraph(*pattern, /* buildMatrix = */ true);
-    const SearchGraph targetGraph(*target, /* buildMatrix = */ false);
+    const SearchGraph patternGraph(*pattern, /* buildMatrix = */ true, patternEdgeLabels);
+    const SearchGraph targetGraph(*target, /* buildMatrix = */ false, targetEdgeLabels);
+
+    // The same narrow refusal RI carries, and for the same reason: edge-label support arrives here
+    // through the shared RIImpl, but a collapsed run of parallel arcs with disagreeing labels has
+    // no single label left to match against. Raised before any worker starts, so no thread is left
+    // to unwind.
+    if (patternGraph.collapsedLabelledEdges() || targetGraph.collapsedLabelledEdges())
+        throw std::runtime_error("ParallelRI does not support parallel edges whose edge labels "
+                                 "disagree - see SubgraphIsomorphism::setEdgeLabels()");
     const RIImpl::Ordering ordering =
         RIImpl::computeOrdering(patternGraph, targetGraph, patternLabels, targetLabels, variant);
 

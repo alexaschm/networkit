@@ -54,6 +54,10 @@ namespace NetworKit {
  * Both semantics, directed and undirected graphs, and optional node labels via
  * @ref setLabels() - with labels, a pair is only feasible if the two labels agree.
  *
+ * **Edge** labels are refused, not honoured: @ref run() throws if @ref setEdgeLabels() was used,
+ * because VF2's feasibility rules compare node labels only and would otherwise report matches that
+ * violate the edge labels asked for. @ref RI is where edge-label support in this module is going.
+ *
  * The search polls `Aux::SignalHandler` regularly, so a long enumeration can be stopped with
  * CTRL+C.
  *

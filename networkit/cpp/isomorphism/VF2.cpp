@@ -613,6 +613,15 @@ VF2::VF2(const Graph &pattern, const Graph &target, Semantics semantics, count m
     : SubgraphIsomorphism(pattern, target, semantics, maxMatches) {}
 
 void VF2::run() {
+    // VF2's feasibility rules compare *node* labels and nothing else, so an edge label set here
+    // would simply be ignored and the matches reported would violate it, with nothing to say so.
+    // Refusing is the honest answer. Teaching the search to honour edge labels is later work and
+    // belongs in ruleSuccessors/rulePredecessors, where the mapped neighbour's edge is already in
+    // hand - see the TODO at the top of this file.
+    if (isEdgeLabelled())
+        throw std::runtime_error("VF2 does not support edge labels - see "
+                                 "SubgraphIsomorphism::setEdgeLabels()");
+
     Aux::SignalHandler handler;
     prepareRun();
     VF2Impl(*pattern, *target, patternLabels, targetLabels, semantics, handler,

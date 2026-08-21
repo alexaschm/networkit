@@ -290,6 +290,13 @@ VF3::VF3(const Graph &pattern, const Graph &target, Semantics semantics, count m
     : SubgraphIsomorphism(pattern, target, semantics, maxMatches) {}
 
 void VF3::run() {
+    // Ahead of need, and deliberately so: VF3Impl is unwritten, so nothing can be silently wrong
+    // today, but having the refusal in place first means whoever writes the search inherits a
+    // defined answer rather than a gap. Same reasoning as VF2's - see there.
+    if (isEdgeLabelled())
+        throw std::runtime_error("VF3 does not support edge labels - see "
+                                 "SubgraphIsomorphism::setEdgeLabels()");
+
     Aux::SignalHandler handler;
     prepareRun();
     VF3Impl(*pattern, *target, patternLabels, targetLabels, semantics, handler,
