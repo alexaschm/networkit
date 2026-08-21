@@ -270,6 +270,73 @@ TEST_P(RIGTest, testVariantsAgreeOnKarate) {
     EXPECT_EQ(expected, 270u);
 }
 
+/**
+ * A target built so that the refinement sweep is selective enough for RI-Ds to intersect with.
+ *
+ * RI-Ds only applies a domain to a target slice when the sweep removed most of it, because below
+ * that the domain re-rejects what the cheap rules reject anyway. On every graph in the corpus the
+ * sweep removes nothing, so without this case the intersecting path would never run in a test at
+ * all.
+ *
+ * The construction: ten nodes of class 0 and ten of class 1, but exactly one edge joins the two
+ * classes. So a class-0 node can host the pattern's class-0 end only if it is that one node, and
+ * the sweep drops nine of the ten. The pattern's class-0 node is given the higher id so that it
+ * lands at the second position in the matching order, which is the parented one - the position
+ * whose candidates come from a slice.
+ *
+ * The yield is asserted rather than assumed, so that an edit which quietly makes the graph less
+ * selective fails here instead of silently stopping testing the path.
+ */
+TEST_P(RIGTest, testSelectiveDomainsDoNotChangeTheMatchSet) {
+    constexpr count perClass = 10;
+
+    Graph target(2 * perClass);
+    // Class-0 nodes 1..9 are joined to each other, so they have degree but no class-1 neighbour.
+    for (node u = 1; u + 1 < perClass; ++u)
+        target.addEdge(u, u + 1);
+    // The single edge across the classes.
+    target.addEdge(0, perClass);
+
+    std::vector<index> targetLabels(2 * perClass);
+    for (node v = 0; v < 2 * perClass; ++v)
+        targetLabels[v] = v < perClass ? 0 : 1;
+
+    // Pattern node 1 carries class 0, so the order puts it second - at the parented position.
+    const Graph pattern = IsomorphismTest::graphOf(2, {{0, 1}});
+    const std::vector<index> patternLabels{1, 0};
+
+    // The precondition the whole case rests on: of the class-0 nodes that could host the pattern's
+    // class-0 node on degree alone, at most a fifth survive the sweep's "must reach the other
+    // position's domain" test. Anything above a fifth and RI-Ds stops intersecting.
+    count couldHost = 0;
+    count survivesSweep = 0;
+    for (node v = 0; v < perClass; ++v) {
+        if (target.degree(v) == 0)
+            continue;
+        ++couldHost;
+        target.forNeighborsOf(v, [&](node w) {
+            if (targetLabels[w] == 1 && target.degree(w) != 0)
+                ++survivesSweep;
+        });
+    }
+    ASSERT_GT(couldHost, 0u);
+    ASSERT_LE(survivesSweep * 5, couldHost) << "the sweep is no longer selective enough to make "
+                                               "RI-Ds intersect, so this case tests nothing";
+
+    std::vector<Match> expected = IsomorphismTest::referenceMatches(
+        pattern, target, Semantics::MONOMORPHISM, patternLabels, targetLabels);
+    IsomorphismTest::sortMatches(expected);
+    ASSERT_FALSE(expected.empty()) << "a case with no matches would not exercise the search";
+
+    RI algo(pattern, target, GetParam(), Semantics::MONOMORPHISM, 0);
+    algo.setLabels(patternLabels, targetLabels);
+    algo.run();
+
+    std::vector<Match> actual = algo.getMatches();
+    IsomorphismTest::sortMatches(actual);
+    EXPECT_EQ(actual, expected);
+}
+
 // -------------------------------------------------------------------------------------------
 // expand(), which nothing else exercises while ParallelRIImpl is stubbed
 // -------------------------------------------------------------------------------------------
