@@ -134,6 +134,35 @@ bool intersectsDomain(const node *begin, const node *end, const index *labels, i
     return false;
 }
 
+/**
+ * How much of a domain the refinement sweep has to remove before intersecting a target slice with
+ * it is worth doing.
+ *
+ * The two halves of a domain are not worth the same. What the *build* half removes - ids that are
+ * not nodes, degrees too small, labels that clash - is exactly what the first two gates of
+ * @ref RIImpl::consistent() reject anyway, for two integer compares and an array read. Paying a
+ * binary search over the domain to reject the same candidate is strictly worse. Only what the
+ * *sweep* removes is information the per-candidate rules do not have.
+ *
+ * So the sweep's yield is the whole question. The figure below is measured, not derived: a
+ * labelled triangle over caidaRouterLevel (n = 192k), with the number of label classes varied to
+ * drive the yield, intersecting versus not -
+ *
+ *     sweep yield   0.56   0.66   0.72   0.79   0.84   0.97
+ *     intersect/not 1.21   1.08   1.06   1.01   1.02   0.99
+ *
+ * - so intersecting costs over a fifth at a yield of one half, and stops costing anything around
+ * four fifths. It never clearly wins at any yield reachable on these inputs, which is why the
+ * threshold sits at the point where the cost disappears rather than anywhere lower: past it the
+ * pruning is free, and free pruning is worth keeping for patterns deeper than the ones measured,
+ * where one rejected candidate saves a whole subtree.
+ *
+ * Below the threshold RI-Ds simply does not intersect, which costs nothing but pruning power: a
+ * domain is a superset of the images a position can take, so declining to apply it lets more
+ * candidates through to rules that reject them anyway. The match set cannot change either way.
+ */
+constexpr double MinSweepYieldForSliceIntersection = 0.8;
+
 } // namespace
 
 RIImpl::Ordering RIImpl::computeOrdering(const SearchGraph &pattern, const SearchGraph &target,
@@ -395,14 +424,15 @@ void RIImpl::candidatesFor(const State &state, std::vector<node> &out) const {
     const index pos = state.depth;
     const node pu = ordering->order[pos];
     const index parentPos = ordering->parent[pos];
-    const std::vector<node> *domain = domains.empty() ? nullptr : &domains[pos];
+    const std::vector<node> *builtDomain = domains.empty() ? nullptr : &domains[pos];
 
     if (parentPos == none) {
         // This position starts a new connected component, so nothing structural constrains it.
-        // Under RI-Ds the domain is already hasNode-, label- and degree-filtered, which is exactly
-        // why RI-Ds pays off on a disconnected pattern.
-        if (domain != nullptr) {
-            out.insert(out.end(), domain->begin(), domain->end());
+        // Here the domain is used whatever its selectivity, because it is not filtering a slice -
+        // it *replaces* a scan of every id in the target, and it can only be shorter. That is why
+        // RI-Ds pays off on a disconnected pattern.
+        if (builtDomain != nullptr) {
+            out.insert(out.end(), builtDomain->begin(), builtDomain->end());
             return;
         }
 
@@ -413,6 +443,11 @@ void RIImpl::candidatesFor(const State &state, std::vector<node> &out) const {
                 out.push_back(tv);
         return;
     }
+
+    // On a slice, though, the domain has to earn its place: everything it rejects that the sweep
+    // did not find is something consistent() rejects more cheaply than a binary search can.
+    const std::vector<node> *domain =
+        builtDomain != nullptr && domainEarnsItsKeep[pos] ? builtDomain : nullptr;
 
     const node pp = ordering->order[parentPos];
     const node parentImage = state.mapping[parentPos];
@@ -560,6 +595,7 @@ void RIImpl::initializeDomains() {
 
     const count positions = ordering->order.size();
     domains.assign(positions, {});
+    domainEarnsItsKeep.assign(positions, false);
     if (positions == 0)
         return;
 
@@ -588,6 +624,7 @@ void RIImpl::initializeDomains() {
     for (index i = 0; i < positions; ++i) {
         const node pu = ordering->order[i];
         std::vector<node> &domain = domains[i];
+        const count built = domain.size();
 
         const auto keep = [&](node tv) {
             for (index j = 0; j < positions; ++j) {
@@ -625,6 +662,16 @@ void RIImpl::initializeDomains() {
         domain.erase(
             std::remove_if(domain.begin(), domain.end(), [&](node tv) { return !keep(tv); }),
             domain.end());
+
+        // Measured against what the *build* left, not against the target: the build's own
+        // removals are duplicated for free by consistent()'s first two gates, so only the sweep's
+        // yield can pay for a binary search per candidate. See
+        // MinSweepYieldForSliceIntersection.
+        const count removedBySweep = built - domain.size();
+        domainEarnsItsKeep[i] =
+            built != 0
+            && static_cast<double>(removedBySweep)
+                   >= MinSweepYieldForSliceIntersection * static_cast<double>(built);
     }
 }
 

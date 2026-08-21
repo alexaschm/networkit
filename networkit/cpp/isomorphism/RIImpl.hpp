@@ -296,6 +296,11 @@ private:
      * costly part of RI-Ds. It is pure pruning, so gating it behind a size threshold would always
      * be safe.
      *
+     * How much that sweep removed is then recorded per position in @ref domainEarnsItsKeep, which
+     * is what decides whether the domain is worth applying to a target slice later. The build's own
+     * removals do not count towards that: @ref consistent() rejects exactly those candidates
+     * already, and more cheaply.
+     *
      * Called from the constructor, so `domains` exists on the expand() path too.
      */
     void initializeDomains();
@@ -336,6 +341,13 @@ private:
     /// Built by the constructor and never touched again, which is what lets any worker evaluate
     /// any State.
     std::vector<std::vector<node>> domains;
+
+    /// RI_DS only: whether domains[i] is worth intersecting a *target slice* with, decided once
+    /// from how much the refinement sweep removed. False leaves the domain in place for the
+    /// parentless path, where it replaces a full scan and always wins, while letting the slice
+    /// path skip a binary search that would only re-reject what consistent() rejects for two
+    /// integer compares. Pure economics: clearing it cannot change which matches are found.
+    std::vector<bool> domainEarnsItsKeep;
 
     /// Reused buffer handed to the reporter, indexed by pattern node. Sized by the constructor.
     std::vector<node> matchBuffer;
