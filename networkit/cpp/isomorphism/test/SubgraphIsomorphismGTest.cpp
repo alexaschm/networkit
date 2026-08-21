@@ -427,10 +427,18 @@ TEST_F(SubgraphIsomorphismGTest, testAlgorithmsThatCannotHonourEdgeLabelsRefuseT
     EXPECT_NO_THROW(unlabelled.run());
     EXPECT_TRUE(unlabelled.hasFinished());
 
-    // The mirror assertion - that plain, non-parallel edge labels do *not* trip a refusal - cannot
-    // be written yet: RI and ParallelRI are the algorithms that will honour them, and both still
-    // throw for want of a search core. It arrives with the RI implementation, where the corpus's
-    // edge-labelled-* cases cover it by construction.
+    // The mirror assertion: an algorithm that does understand edge labels must not refuse them.
+    // RI honours them, so it answers - and answers the labelled question, not the unlabelled one,
+    // which is why the count is compared against the reference rather than merely being nonzero.
+    // ParallelRI will join it once its worker pool is written; today it still says logic_error,
+    // which is a different failure from a refusal.
+    RI ri(pattern.G, target.G, RI::Variant::RI, Semantics::MONOMORPHISM);
+    ri.setEdgeLabels(pattern.edgeLabels, target.edgeLabels);
+    EXPECT_NO_THROW(ri.run());
+    EXPECT_TRUE(ri.hasFinished());
+    EXPECT_EQ(ri.numberOfMatches(), referenceMatches(pattern.G, target.G, Semantics::MONOMORPHISM,
+                                                     {}, {}, pattern.edgeLabels, target.edgeLabels)
+                                        .size());
 }
 
 TEST_F(SubgraphIsomorphismGTest, testParallelEdgesWithDisagreeingLabelsAreRefused) {
@@ -439,10 +447,10 @@ TEST_F(SubgraphIsomorphismGTest, testParallelEdgesWithDisagreeingLabelsAreRefuse
     // only what no snapshot can represent. The two parallel 0-1 edges disagree, so collapsing them
     // leaves one arc that cannot carry both labels.
     //
-    // The distinction this test rests on is which exception comes out. RI and ParallelRI are
-    // unwritten and answer std::logic_error when their search is reached; the refusal is a
-    // std::runtime_error raised before that, so demanding a runtime_error is what proves the
-    // refusal fired rather than the search simply not existing yet.
+    // The distinction this test rests on is which exception comes out. The refusal is a
+    // std::runtime_error raised before the search starts; ParallelRI's worker pool is unwritten
+    // and answers std::logic_error once the search is reached. So demanding a runtime_error is
+    // what proves the refusal fired rather than the search simply not existing yet.
     const IsomorphismTest::LabelledGraph pattern =
         IsomorphismTest::labelledGraphOf(3, {{0, 1, 1}, {1, 2, 2}});
     const IsomorphismTest::LabelledGraph target =
@@ -459,14 +467,19 @@ TEST_F(SubgraphIsomorphismGTest, testParallelEdgesWithDisagreeingLabelsAreRefuse
     EXPECT_FALSE(parallelRi.hasFinished());
 
     // Equally-labelled parallel edges collapse losslessly, so they must get past the refusal and
-    // fail on the missing search instead - a logic_error, which is not a runtime_error.
+    // be searched normally.
     const IsomorphismTest::LabelledGraph agreeing =
         IsomorphismTest::labelledGraphOf(4, {{0, 1, 1}, {0, 1, 1}, {1, 2, 2}, {2, 3, 1}});
 
     RI lossless(pattern.G, agreeing.G, RI::Variant::RI, Semantics::MONOMORPHISM);
     lossless.setEdgeLabels(pattern.edgeLabels, agreeing.edgeLabels);
-    EXPECT_THROW(lossless.run(), std::logic_error)
+    EXPECT_NO_THROW(lossless.run())
         << "collapsing equally-labelled parallel edges is lossless and must not be refused";
+    EXPECT_TRUE(lossless.hasFinished());
+    EXPECT_EQ(lossless.numberOfMatches(),
+              referenceMatches(pattern.G, agreeing.G, Semantics::MONOMORPHISM, {}, {},
+                               pattern.edgeLabels, agreeing.edgeLabels)
+                  .size());
 }
 
 } // namespace NetworKit
