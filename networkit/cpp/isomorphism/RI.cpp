@@ -42,6 +42,10 @@ void RI::run() {
            handler, [this](const std::vector<node> &match) { return reportMatch(match); })
         .run();
 
+    // RIImpl may only poll isRunning(), so an interrupted search just returns. Without this, that
+    // lands straight in finishRun() and the caller silently gets a truncated match set instead of
+    // the documented InterruptException. ParallelRI.cpp does exactly this after its workers join.
+    handler.assureRunning();
     finishRun();
 }
 
