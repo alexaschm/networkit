@@ -23,24 +23,30 @@ namespace NetworKit {
  * its effort computing a good order once, up front, and then runs a deliberately plain
  * backtracking search.
  *
- * The order is built greedily. Repeatedly append whichever unmapped pattern node has the most
- * edges into the nodes already in the order, breaking ties by degree. The reason this works is
- * that every such edge is a constraint: when it is that node's turn, its candidates must be
- * adjacent to already-mapped target nodes, and the more such constraints there are, the fewer
- * candidates survive. Putting the most-constrained node next keeps the search tree narrow from
- * the very top.
+ * The order is built greedily, starting from the highest-degree node, and each further node is
+ * chosen by three numbers compared in turn. The first is how many **edges** the candidate has into
+ * the nodes already ordered; every such edge is a constraint, because when the candidate's turn
+ * comes its images must be adjacent to already-mapped target nodes, so the more of them there are
+ * the fewer candidates survive. The second is a look-ahead at constraints that are not in force
+ * yet: how many already-ordered nodes the candidate can reach in two hops **through a node that is
+ * not ordered yet**. The third is how many of the candidate's neighbours lie outside the order and
+ * touch nothing in it, which is a rough measure of how much new territory choosing it opens up.
+ * Ties on all three go to the smallest node id, so the order is reproducible. Putting the
+ * most-constrained node next keeps the search tree narrow from the very top.
  *
  * After that the search is straightforward. Walk the fixed order; at each position take the
  * candidates implied by the already-mapped neighbours, check each one against the pattern edges,
  * and recurse. There are no terminal sets and no candidate bookkeeping to maintain, which makes
  * each individual step very cheap - that is the trade RI makes against @ref VF2 and @ref VF3.
  *
- * @ref Variant::RI_DS adds two things on top: it breaks ordering ties by **candidate domain
- * size** (how many target nodes could possibly host each pattern node, judged from labels and
- * degrees), and it applies **forward checking** - after mapping a node, it verifies that every
- * still-unmapped pattern node retains at least one possible candidate, and backtracks at once if
- * one is left with none. Both cost a little per step and pay off on labelled and sparse inputs,
- * which is why RI_DS is the default.
+ * @ref Variant::RI_DS adds **domains**: before the search starts, it works out for each pattern
+ * node which target nodes could host it at all - judged from labels and degrees, then narrowed
+ * once by checking that each of the node's pattern neighbours still has somewhere to go across a
+ * real target edge - and then uses those sets to shrink every candidate list during the search.
+ * The order is the same as plain RI's; there is no domain-size tie-break. Nor is there any forward
+ * checking or other per-step inference, because the paper measured that the extra pruning does not
+ * pay for what it costs. Domains are computed once, cost a single pass up front, and pay off on
+ * labelled, sparse and disconnected patterns, which is why RI_DS is the default.
  *
  * ## When to use it
  *
@@ -51,8 +57,14 @@ namespace NetworKit {
  *
  * ## What it supports
  *
- * Both semantics, directed and undirected graphs, and optional node labels via
- * @ref setLabels().
+ * Both semantics, directed and undirected graphs, optional node labels via @ref setLabels(), and
+ * optional edge labels via @ref setEdgeLabels(). Edge labels are cheap here: the parent edge's
+ * label filters the candidate slice as it is walked, which costs one comparison per candidate.
+ *
+ * The one input it refuses is **parallel edges whose labels disagree**. The search works off a
+ * snapshot in which parallel edges are collapsed to one, and a single arc cannot stand for two
+ * different labels, so `run()` throws rather than answer a question that was not asked. Parallel
+ * edges carrying the same label collapse losslessly and are fine.
  *
  * The search polls `Aux::SignalHandler` regularly, so a long enumeration can be stopped with
  * CTRL+C.
@@ -76,10 +88,11 @@ public:
      * Which flavour of the RI search to run.
      */
     enum class Variant : uint8_t {
-        /// Plain RI: order by how many edges each node has into the already-ordered prefix.
+        /// Plain RI: order by the three-level score described above, and search with no
+        /// bookkeeping at all.
         RI,
-        /// RI-DS: additionally break ordering ties by candidate domain size, and prune with
-        /// forward checking. Costs a little more per step; usually worth it.
+        /// RI-DS: the same order, plus per-node candidate domains computed once before the search
+        /// and used to shrink every candidate list. Costs one pass up front; usually worth it.
         RI_DS
     };
 
