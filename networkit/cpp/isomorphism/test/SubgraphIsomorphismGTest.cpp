@@ -13,6 +13,7 @@
 #include <atomic>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <vector>
 
 #include <omp.h>
@@ -22,7 +23,11 @@
 #include <networkit/Globals.hpp>
 #include <networkit/auxiliary/SignalHandling.hpp>
 #include <networkit/graph/Graph.hpp>
+#include <networkit/isomorphism/ParallelRI.hpp>
+#include <networkit/isomorphism/RI.hpp>
 #include <networkit/isomorphism/SubgraphIsomorphism.hpp>
+#include <networkit/isomorphism/VF2.hpp>
+#include <networkit/isomorphism/VF3.hpp>
 
 #include "SubgraphIsomorphismTestUtils.hpp"
 
@@ -366,6 +371,102 @@ TEST_F(SubgraphIsomorphismGTest, testAlgorithmRecoversAfterAnInterrupt) {
     std::vector<Match> actual = algo.getMatches();
     IsomorphismTest::sortMatches(actual);
     EXPECT_EQ(actual, expected);
+}
+
+TEST_F(SubgraphIsomorphismGTest, testSetEdgeLabelsValidatesItsInput) {
+
+    // The setter is the whole check: nothing consumes the vectors until run(), so a vector that is
+    // too short is a silent out-of-bounds read in the innermost loop of whichever search gets it.
+    Graph pattern = graphOf(3, {{0, 1}, {1, 2}});
+    Graph target = graphOf(4, {{0, 1}, {1, 2}, {2, 3}});
+
+    IsomorphismTest::ReferenceSubgraphIsomorphism unindexed(pattern, target,
+                                                            Semantics::MONOMORPHISM);
+    ASSERT_FALSE(pattern.hasEdgeIds());
+    EXPECT_THROW(unindexed.setEdgeLabels({1, 2}, {1, 2, 3}), std::runtime_error)
+        << "edge labels are indexed by edge id, so a graph without ids has no index space";
+
+    // Clearing must keep working even then: it is tested before the size checks, which is the only
+    // reason the documented "pass two empty vectors" idiom survives them.
+    EXPECT_NO_THROW(unindexed.setEdgeLabels({}, {}));
+
+    pattern.indexEdges();
+    target.indexEdges();
+    IsomorphismTest::ReferenceSubgraphIsomorphism algo(pattern, target, Semantics::MONOMORPHISM);
+
+    EXPECT_THROW(algo.setEdgeLabels({1}, {1, 2, 3}), std::runtime_error) << "pattern too short";
+    EXPECT_THROW(algo.setEdgeLabels({1, 2}, {1, 2}), std::runtime_error) << "target too short";
+    EXPECT_NO_THROW(algo.setEdgeLabels({1, 2}, {1, 2, 3}));
+    EXPECT_NO_THROW(algo.setEdgeLabels({}, {}));
+}
+
+TEST_F(SubgraphIsomorphismGTest, testAlgorithmsThatCannotHonourEdgeLabelsRefuseThem) {
+
+    // The module's rule, judged here rather than in either algorithm's own test file because it
+    // applies to every driver: refuse edge labels outright in the algorithms that will not
+    // understand them. Silently returning matches that violate an edge label the caller asked for
+    // is the one failure worse than refusing.
+    const IsomorphismTest::LabelledGraph pattern =
+        IsomorphismTest::labelledGraphOf(3, {{0, 1, 1}, {1, 2, 2}});
+    const IsomorphismTest::LabelledGraph target =
+        IsomorphismTest::labelledGraphOf(4, {{0, 1, 1}, {1, 2, 2}, {2, 3, 1}});
+
+    VF2 vf2(pattern.G, target.G, Semantics::MONOMORPHISM);
+    vf2.setEdgeLabels(pattern.edgeLabels, target.edgeLabels);
+    EXPECT_THROW(vf2.run(), std::runtime_error);
+    EXPECT_FALSE(vf2.hasFinished()) << "a refused run must not count as finished";
+
+    VF3 vf3(pattern.G, target.G, Semantics::MONOMORPHISM);
+    vf3.setEdgeLabels(pattern.edgeLabels, target.edgeLabels);
+    EXPECT_THROW(vf3.run(), std::runtime_error);
+    EXPECT_FALSE(vf3.hasFinished()) << "a refused run must not count as finished";
+
+    // Without edge labels both are back to whatever they did before. VF2 answers; VF3's search is
+    // still unwritten and says so with a logic_error, which is a different failure from a refusal.
+    VF2 unlabelled(pattern.G, target.G, Semantics::MONOMORPHISM);
+    EXPECT_NO_THROW(unlabelled.run());
+    EXPECT_TRUE(unlabelled.hasFinished());
+
+    // The mirror assertion - that plain, non-parallel edge labels do *not* trip a refusal - cannot
+    // be written yet: RI and ParallelRI are the algorithms that will honour them, and both still
+    // throw for want of a search core. It arrives with the RI implementation, where the corpus's
+    // edge-labelled-* cases cover it by construction.
+}
+
+TEST_F(SubgraphIsomorphismGTest, testParallelEdgesWithDisagreeingLabelsAreRefused) {
+
+    // The other half of the module's rule: the algorithms that *will* understand edge labels refuse
+    // only what no snapshot can represent. The two parallel 0-1 edges disagree, so collapsing them
+    // leaves one arc that cannot carry both labels.
+    //
+    // The distinction this test rests on is which exception comes out. RI and ParallelRI are
+    // unwritten and answer std::logic_error when their search is reached; the refusal is a
+    // std::runtime_error raised before that, so demanding a runtime_error is what proves the
+    // refusal fired rather than the search simply not existing yet.
+    const IsomorphismTest::LabelledGraph pattern =
+        IsomorphismTest::labelledGraphOf(3, {{0, 1, 1}, {1, 2, 2}});
+    const IsomorphismTest::LabelledGraph target =
+        IsomorphismTest::labelledGraphOf(4, {{0, 1, 1}, {0, 1, 4}, {1, 2, 2}, {2, 3, 1}});
+
+    RI ri(pattern.G, target.G, RI::Variant::RI, Semantics::MONOMORPHISM);
+    ri.setEdgeLabels(pattern.edgeLabels, target.edgeLabels);
+    EXPECT_THROW(ri.run(), std::runtime_error);
+    EXPECT_FALSE(ri.hasFinished());
+
+    ParallelRI parallelRi(pattern.G, target.G, RI::Variant::RI, Semantics::MONOMORPHISM);
+    parallelRi.setEdgeLabels(pattern.edgeLabels, target.edgeLabels);
+    EXPECT_THROW(parallelRi.run(), std::runtime_error);
+    EXPECT_FALSE(parallelRi.hasFinished());
+
+    // Equally-labelled parallel edges collapse losslessly, so they must get past the refusal and
+    // fail on the missing search instead - a logic_error, which is not a runtime_error.
+    const IsomorphismTest::LabelledGraph agreeing =
+        IsomorphismTest::labelledGraphOf(4, {{0, 1, 1}, {0, 1, 1}, {1, 2, 2}, {2, 3, 1}});
+
+    RI lossless(pattern.G, agreeing.G, RI::Variant::RI, Semantics::MONOMORPHISM);
+    lossless.setEdgeLabels(pattern.edgeLabels, agreeing.edgeLabels);
+    EXPECT_THROW(lossless.run(), std::logic_error)
+        << "collapsing equally-labelled parallel edges is lossless and must not be refused";
 }
 
 } // namespace NetworKit

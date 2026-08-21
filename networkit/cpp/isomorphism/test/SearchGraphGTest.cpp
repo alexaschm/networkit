@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <iterator>
+#include <stdexcept>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -18,6 +19,7 @@
 #include <networkit/io/METISGraphReader.hpp>
 #include <networkit/isomorphism/SubgraphIsomorphism.hpp>
 
+#include "SubgraphIsomorphismTestUtils.hpp"
 #include "../SearchGraph.hpp"
 
 namespace NetworKit {
@@ -58,6 +60,47 @@ void expectSlicesAreSimpleNeighborhoods(const Graph &G, const IsomorphismDetails
         EXPECT_EQ(std::vector<node>(SG.inBegin(u), SG.inEnd(u)), expectedIn);
         EXPECT_EQ(SG.outDegree(u), expectedOut.size());
         EXPECT_EQ(SG.inDegree(u), expectedIn.size());
+    });
+}
+
+/// Every arc must still be holding the label its own edge was given.
+///
+/// This is the invariant the whole edge-label layout rests on: a label is identified by the offset
+/// it sits at, so the sort and the compaction have to move the label array in lockstep with the
+/// head array. Getting that wrong breaks nothing loudly - every arc simply ends up with some other
+/// arc's label - which is why it is checked directly rather than through anything that uses it.
+///
+/// Both ways of reading a label are checked against each other and against the input: the
+/// @ref SearchGraph::outLabelBegin() slice, which the search will walk, and
+/// @ref SearchGraph::edgeLabel(), which binary-searches for one arc. Membership rather than
+/// equality against the input, because a collapsed run of parallel arcs legitimately keeps only one
+/// of the labels the caller gave that pair; without parallel edges there is only one to keep.
+void expectLabelsPairWithHeads(const Graph &G, const std::vector<index> &edgeLabels,
+                               const IsomorphismDetails::SearchGraph &SG) {
+    const auto given = IsomorphismTest::edgeLabelsByPair(G, edgeLabels);
+
+    G.forNodes([&](node u) {
+        const index *outLabels = SG.outLabelBegin(u);
+        ASSERT_NE(outLabels, nullptr);
+
+        index offset = 0;
+        for (const node *v = SG.outBegin(u); v != SG.outEnd(u); ++v, ++offset) {
+            const std::vector<index> &wanted = IsomorphismTest::labelsOfPair(given, u, *v);
+            EXPECT_NE(std::find(wanted.begin(), wanted.end(), outLabels[offset]), wanted.end())
+                << "out-arc " << u << " -> " << *v << " carries a label nobody gave it";
+            EXPECT_EQ(SG.edgeLabel(u, *v), outLabels[offset])
+                << "edgeLabel() and the out-slice disagree about " << u << " -> " << *v;
+        }
+
+        const index *inLabels = SG.inLabelBegin(u);
+        ASSERT_NE(inLabels, nullptr);
+
+        offset = 0;
+        for (const node *v = SG.inBegin(u); v != SG.inEnd(u); ++v, ++offset) {
+            const std::vector<index> &wanted = IsomorphismTest::labelsOfPair(given, *v, u);
+            EXPECT_NE(std::find(wanted.begin(), wanted.end(), inLabels[offset]), wanted.end())
+                << "in-arc " << *v << " -> " << u << " carries a label nobody gave it";
+        }
     });
 }
 
@@ -563,6 +606,168 @@ TEST_F(SearchGraphGTest, testCommonOutNeighbors) {
     EXPECT_EQ(SG.commonOutNeighbors(0, 5), 0); // {2,3,4} and {1} share nothing
     EXPECT_EQ(SG.commonOutNeighbors(2, 3), 1); // node 0
     EXPECT_EQ(SG.commonOutNeighbors(0, 0), SG.outDegree(0));
+}
+
+TEST_F(SearchGraphGTest, testEdgeLabelsSurviveTheSort) {
+
+    // Node 9 is given its neighbours in *descending* id order, so the scattered order and the
+    // sorted order genuinely differ and std::sort has real work to do. Every edge carries a
+    // different label, so a sort that moved heads without moving labels with them cannot cancel
+    // out - each arc would visibly end up with another arc's label.
+    for (bool directed : {false, true}) {
+        const IsomorphismTest::LabelledGraph labelled = IsomorphismTest::labelledGraphOf(
+            10, {{9, 6, 60}, {9, 4, 40}, {9, 2, 20}, {9, 0, 5}, {8, 7, 70}, {8, 1, 10}, {3, 5, 50}},
+            directed);
+
+        // The premise of the test: without this the sort is a no-op and nothing is being checked.
+        ASSERT_EQ(std::vector<node>(labelled.G.neighborRange(9).begin(),
+                                    labelled.G.neighborRange(9).end()),
+                  (std::vector<node>{6, 4, 2, 0}))
+            << "directed=" << directed;
+
+        for (bool buildMatrix : {false, true}) {
+            const IsomorphismDetails::SearchGraph SG(labelled.G, buildMatrix, labelled.edgeLabels);
+
+            EXPECT_TRUE(SG.hasEdgeLabels()) << "directed=" << directed;
+            expectSlicesAreSimpleNeighborhoods(labelled.G, SG);
+            expectLabelsPairWithHeads(labelled.G, labelled.edgeLabels, SG);
+
+            // Spelled out for one node, so a failure says what went wrong rather than only that
+            // something did. The slice is sorted, the labels came in the opposite order.
+            EXPECT_EQ(std::vector<node>(SG.outBegin(9), SG.outEnd(9)),
+                      (std::vector<node>{0, 2, 4, 6}))
+                << "directed=" << directed;
+            EXPECT_EQ(std::vector<index>(SG.outLabelBegin(9), SG.outLabelBegin(9) + 4),
+                      (std::vector<index>{5, 20, 40, 60}))
+                << "directed=" << directed;
+
+            // An arc that does not exist has no label, and nor does the reverse of a directed one.
+            EXPECT_EQ(SG.edgeLabel(9, 7), none) << "directed=" << directed;
+            EXPECT_EQ(SG.edgeLabel(6, 9), directed ? none : index{60}) << "directed=" << directed;
+
+            // Nothing was thrown away, so no algorithm has anything to refuse.
+            EXPECT_FALSE(SG.collapsedLabelledEdges()) << "directed=" << directed;
+        }
+    }
+}
+
+TEST_F(SearchGraphGTest, testEdgeLabelsSurviveTheCompaction) {
+
+    // The same invariant, but now with the compaction in the way: it rewrites the slices in place
+    // and would corrupt the pairing just as thoroughly as the sort if it moved a head without its
+    // label. Parallel arcs here all agree on their label, so collapsing them is lossless and the
+    // survivor must keep it; self-loops are dropped outright, whatever they carry.
+    for (bool directed : {false, true}) {
+        const IsomorphismTest::LabelledGraph labelled =
+            IsomorphismTest::labelledGraphOf(6,
+                                             {{4, 3, 30},
+                                              {4, 3, 30},
+                                              {4, 1, 10},
+                                              {4, 1, 10},
+                                              {4, 1, 10},
+                                              {2, 2, 99},
+                                              {2, 2, 98},
+                                              {5, 0, 50}},
+                                             directed);
+
+        const IsomorphismDetails::SearchGraph SG(labelled.G, /* buildMatrix = */ true,
+                                                 labelled.edgeLabels);
+
+        expectSlicesAreSimpleNeighborhoods(labelled.G, SG);
+        expectLabelsPairWithHeads(labelled.G, labelled.edgeLabels, SG);
+
+        EXPECT_EQ(std::vector<node>(SG.outBegin(4), SG.outEnd(4)), (std::vector<node>{1, 3}))
+            << "directed=" << directed;
+        EXPECT_EQ(SG.edgeLabel(4, 1), 10u) << "directed=" << directed;
+        EXPECT_EQ(SG.edgeLabel(4, 3), 30u) << "directed=" << directed;
+
+        // Self-loops leave nothing behind, so their labels cannot disagree about anything.
+        EXPECT_EQ(SG.outDegree(2), 0u) << "directed=" << directed;
+        EXPECT_EQ(SG.edgeLabel(2, 2), none) << "directed=" << directed;
+        EXPECT_FALSE(SG.collapsedLabelledEdges()) << "directed=" << directed;
+    }
+}
+
+TEST_F(SearchGraphGTest, testCollapsedLabelledEdges) {
+
+    // The flag every algorithm checks before it starts searching. It has to be exact in both
+    // directions: never firing means a differently-labelled parallel edge is silently dropped and
+    // the search answers a question nobody asked, while firing too eagerly refuses inputs that
+    // collapse perfectly well.
+    for (bool directed : {false, true}) {
+        const IsomorphismTest::LabelledGraph plain =
+            IsomorphismTest::labelledGraphOf(4, {{0, 1, 1}, {1, 2, 2}, {2, 3, 1}}, directed);
+        const IsomorphismTest::LabelledGraph agreeing = IsomorphismTest::labelledGraphOf(
+            4, {{0, 1, 1}, {0, 1, 1}, {1, 2, 2}, {2, 3, 1}}, directed);
+        const IsomorphismTest::LabelledGraph disagreeing = IsomorphismTest::labelledGraphOf(
+            4, {{0, 1, 1}, {0, 1, 4}, {1, 2, 2}, {2, 3, 1}}, directed);
+
+        EXPECT_FALSE(IsomorphismDetails::SearchGraph(plain.G, false, plain.edgeLabels)
+                         .collapsedLabelledEdges())
+            << "directed=" << directed << " - nothing was collapsed at all";
+
+        EXPECT_FALSE(IsomorphismDetails::SearchGraph(agreeing.G, false, agreeing.edgeLabels)
+                         .collapsedLabelledEdges())
+            << "directed=" << directed << " - collapsing equal labels is lossless";
+
+        EXPECT_TRUE(IsomorphismDetails::SearchGraph(disagreeing.G, false, disagreeing.edgeLabels)
+                        .collapsedLabelledEdges())
+            << "directed=" << directed << " - a label was thrown away";
+
+        // An unlabelled snapshot of the very same graph has no labels to lose, so it must not
+        // refuse anything. This is what keeps the flag from leaking into unlabelled searches.
+        const IsomorphismDetails::SearchGraph unlabelled(disagreeing.G, false);
+        EXPECT_FALSE(unlabelled.hasEdgeLabels()) << "directed=" << directed;
+        EXPECT_FALSE(unlabelled.collapsedLabelledEdges()) << "directed=" << directed;
+        EXPECT_EQ(unlabelled.edgeLabel(0, 1), none) << "directed=" << directed;
+        EXPECT_EQ(unlabelled.outLabelBegin(0), nullptr) << "directed=" << directed;
+    }
+}
+
+TEST_F(SearchGraphGTest, testDirectedArcLabelsAreIndependent) {
+
+    // A directed mutual pair is two edges with two ids in two different slices, so the two
+    // directions carry unrelated labels. Storing labels per node pair instead of per arc collides
+    // them, and this is the assertion that says so immediately.
+    const IsomorphismTest::LabelledGraph labelled = IsomorphismTest::labelledGraphOf(
+        3, {{0, 1, 7}, {1, 0, 8}, {1, 2, 9}}, /* directed = */ true);
+
+    const IsomorphismDetails::SearchGraph SG(labelled.G, /* buildMatrix = */ true,
+                                             labelled.edgeLabels);
+
+    EXPECT_EQ(SG.edgeLabel(0, 1), 7u);
+    EXPECT_EQ(SG.edgeLabel(1, 0), 8u);
+    EXPECT_EQ(SG.edgeLabel(1, 2), 9u);
+    EXPECT_EQ(SG.edgeLabel(2, 1), none);
+    EXPECT_FALSE(SG.collapsedLabelledEdges());
+
+    expectLabelsPairWithHeads(labelled.G, labelled.edgeLabels, SG);
+
+    // The in-slices are a second copy of the same arcs, so they have to agree arc for arc rather
+    // than merely hold the right multiset. Node 1 is reached by 0 -> 1, which carries 7.
+    ASSERT_EQ(SG.inDegree(1), 1u);
+    EXPECT_EQ(*SG.inBegin(1), 0u);
+    EXPECT_EQ(*SG.inLabelBegin(1), 7u);
+
+    // ... and node 0 by 1 -> 0, which carries 8. Keying by node pair would give both the same.
+    ASSERT_EQ(SG.inDegree(0), 1u);
+    EXPECT_EQ(*SG.inBegin(0), 1u);
+    EXPECT_EQ(*SG.inLabelBegin(0), 8u);
+}
+
+TEST_F(SearchGraphGTest, testEdgeLabelsNeedEdgeIds) {
+
+    // Labels are indexed by edge id, so a graph without ids has no index space for them and the
+    // scatter would read edgeLabels[none]. Saying so here beats crashing somewhere downstream.
+    Graph G = IsomorphismTest::graphOf(3, {{0, 1}, {1, 2}});
+    ASSERT_FALSE(G.hasEdgeIds());
+    EXPECT_THROW(IsomorphismDetails::SearchGraph(G, false, std::vector<index>{1, 2}),
+                 std::runtime_error);
+
+    G.indexEdges();
+    EXPECT_THROW(IsomorphismDetails::SearchGraph(G, false, std::vector<index>{1}),
+                 std::runtime_error);
+    EXPECT_NO_THROW(IsomorphismDetails::SearchGraph(G, false, std::vector<index>{1, 2}));
 }
 
 } // namespace NetworKit

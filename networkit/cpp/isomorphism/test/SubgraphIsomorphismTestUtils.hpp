@@ -8,8 +8,11 @@
 #include <algorithm>
 #include <functional>
 #include <initializer_list>
+#include <map>
 #include <memory>
+#include <stdexcept>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -59,15 +62,77 @@ inline bool labelsCompatible(const std::vector<index> &patternLabels,
     return patternLabel == none || targetLabel == none || patternLabel == targetLabel;
 }
 
+/// Every label carried by an edge, keyed by *ordered* node pair.
+///
+/// Read from forEdges(), which visits each edge exactly once and hands out a distinct id for every
+/// copy of a parallel pair, and then symmetrized by hand for an undirected graph. Asking an
+/// endpoint for its incident edge ids instead would be wrong: `Graph::indexEdges()` gives both
+/// copies of an undirected parallel pair the *same* id when they are read from the lower-numbered
+/// endpoint, so which labels you saw would depend on which end you asked from.
+///
+/// A pair maps to a vector rather than a single label because parallel edges are legal input.
+inline std::map<std::pair<node, node>, std::vector<index>>
+edgeLabelsByPair(const Graph &G, const std::vector<index> &edgeLabels) {
+    std::map<std::pair<node, node>, std::vector<index>> byPair;
+    G.forEdges([&](node u, node v, edgeweight, edgeid eid) {
+        const index label = eid < edgeLabels.size() ? edgeLabels[eid] : none;
+        byPair[{u, v}].push_back(label);
+        if (!G.isDirected() && u != v)
+            byPair[{v, u}].push_back(label);
+    });
+    return byPair;
+}
+
+/// The labels on the edge from @a u to @a v, or nothing at all if there is no such edge.
+inline const std::vector<index> &
+labelsOfPair(const std::map<std::pair<node, node>, std::vector<index>> &byPair, node u, node v) {
+    static const std::vector<index> nothing;
+    const auto found = byPair.find({u, v});
+    return found == byPair.end() ? nothing : found->second;
+}
+
+/// Whether a pattern edge may sit on a target edge as far as edge labels are concerned.
+///
+/// `none` is a wildcard on either side, exactly as it is for node labels. A pair of nodes carries
+/// several labels only when the graph has parallel edges, and then it is enough that *some*
+/// pattern label is compatible with *some* target label - the reading spelled out under "Ideas for
+/// later" in the class documentation. On the simple graphs the module accepts today there is one
+/// label per side and this is plain equality-with-wildcards.
+inline bool edgeLabelsCompatible(const std::vector<index> &patternEdgeLabels,
+                                 const std::vector<index> &targetEdgeLabels) {
+    for (index patternLabel : patternEdgeLabels) {
+        for (index targetLabel : targetEdgeLabels) {
+            if (patternLabel == none || targetLabel == none || patternLabel == targetLabel)
+                return true;
+        }
+    }
+    return false;
+}
+
 /// Whether one complete mapping is a match. Judged from scratch, without reference to how the
 /// mapping was produced, so this doubles as the check that an *algorithm's* output is well-formed.
+///
+/// The edge-label vectors are last and default to empty so that every call site that predates them
+/// keeps reading as it did. They are indexed by edge id, not node id.
 inline bool isValidMatch(const Graph &pattern, const Graph &target, Semantics semantics,
                          const std::vector<index> &patternLabels,
-                         const std::vector<index> &targetLabels, const Match &match) {
+                         const std::vector<index> &targetLabels, const Match &match,
+                         const std::vector<index> &patternEdgeLabels = {},
+                         const std::vector<index> &targetEdgeLabels = {}) {
     const count pz = pattern.upperNodeIdBound();
 
     if (match.size() != pz)
         return false;
+
+    // Rebuilt per mapping rather than cached, because being obviously right matters more here than
+    // being fast, and the corpus graphs have a handful of edges each.
+    const bool edgeLabelled = !patternEdgeLabels.empty();
+    std::map<std::pair<node, node>, std::vector<index>> patternEdgeLabelsByPair;
+    std::map<std::pair<node, node>, std::vector<index>> targetEdgeLabelsByPair;
+    if (edgeLabelled) {
+        patternEdgeLabelsByPair = edgeLabelsByPair(pattern, patternEdgeLabels);
+        targetEdgeLabelsByPair = edgeLabelsByPair(target, targetEdgeLabels);
+    }
 
     // Exactly the pattern nodes that exist are mapped, each to a target node that exists, and
     // each respecting the labels.
@@ -110,6 +175,13 @@ inline bool isValidMatch(const Graph &pattern, const Graph &target, Semantics se
                 return false;
             if (semantics == Semantics::INDUCED && !patternEdge && targetEdge)
                 return false;
+
+            // Edge labels only ever constrain edges that exist, so a pattern non-edge is never
+            // involved and the INDUCED rule above is untouched by them.
+            if (edgeLabelled && patternEdge
+                && !edgeLabelsCompatible(labelsOfPair(patternEdgeLabelsByPair, a, b),
+                                         labelsOfPair(targetEdgeLabelsByPair, match[a], match[b])))
+                return false;
         }
     }
 
@@ -127,7 +199,9 @@ inline bool isValidMatch(const Graph &pattern, const Graph &target, Semantics se
 inline std::vector<Match> referenceMatches(const Graph &pattern, const Graph &target,
                                            Semantics semantics,
                                            const std::vector<index> &patternLabels = {},
-                                           const std::vector<index> &targetLabels = {}) {
+                                           const std::vector<index> &targetLabels = {},
+                                           const std::vector<index> &patternEdgeLabels = {},
+                                           const std::vector<index> &targetEdgeLabels = {}) {
     std::vector<node> patternNodes;
     pattern.forNodes([&](node u) { patternNodes.push_back(u); });
 
@@ -140,7 +214,8 @@ inline std::vector<Match> referenceMatches(const Graph &pattern, const Graph &ta
 
     std::function<void(index)> assign = [&](index next) {
         if (next == patternNodes.size()) {
-            if (isValidMatch(pattern, target, semantics, patternLabels, targetLabels, current))
+            if (isValidMatch(pattern, target, semantics, patternLabels, targetLabels, current,
+                             patternEdgeLabels, targetEdgeLabels))
                 matches.push_back(current);
             return;
         }
@@ -172,7 +247,8 @@ inline void sortMatches(std::vector<Match> &matches) {
 // The shared corpus
 // ---------------------------------------------------------------------------------------------
 
-/// One entry of the corpus. Label vectors are empty for an unlabelled case.
+/// One entry of the corpus. Label vectors are empty for an unlabelled case; the edge-label ones are
+/// indexed by edge id, so a case that uses them builds its graphs with @ref labelledGraphOf().
 struct Case {
     std::string name;
     Graph pattern;
@@ -180,6 +256,8 @@ struct Case {
     Semantics semantics;
     std::vector<index> patternLabels;
     std::vector<index> targetLabels;
+    std::vector<index> patternEdgeLabels;
+    std::vector<index> targetEdgeLabels;
 };
 
 inline Graph graphOf(count n, std::initializer_list<std::pair<node, node>> edges,
@@ -188,6 +266,47 @@ inline Graph graphOf(count n, std::initializer_list<std::pair<node, node>> edges
     for (const std::pair<node, node> &e : edges)
         G.addEdge(e.first, e.second);
     return G;
+}
+
+/// A graph together with the edge-label vector that goes with it, keyed by edge id.
+struct LabelledGraph {
+    Graph G;
+    std::vector<index> edgeLabels;
+};
+
+/// Like @ref graphOf(), but each edge is written as `{u, v, label}` and the result carries the
+/// label vector the setter wants.
+///
+/// The indirection is unavoidable: edge labels are indexed by edge id, and nobody knows what id an
+/// edge got until `indexEdges()` has run over the finished graph. So the labels are queued per node
+/// pair in the order they were written, and then handed out in the order `forEdges()` meets the
+/// edges - which is also how @ref edgeLabelsByPair() and `SearchGraph` read them back, and which
+/// covers parallel edges, since `forEdges()` visits each copy with an id of its own. Two parallel
+/// copies of the same pair may end up swapping labels with each other; nothing here depends on
+/// which of the two got which.
+inline LabelledGraph labelledGraphOf(count n,
+                                     std::initializer_list<std::tuple<node, node, index>> edges,
+                                     bool directed = false) {
+    const auto key = [directed](node u, node v) {
+        return directed || u <= v ? std::pair<node, node>{u, v} : std::pair<node, node>{v, u};
+    };
+
+    Graph G(n, false, directed);
+    std::map<std::pair<node, node>, std::vector<index>> queued;
+    for (const std::tuple<node, node, index> &e : edges) {
+        G.addEdge(std::get<0>(e), std::get<1>(e));
+        queued[key(std::get<0>(e), std::get<1>(e))].push_back(std::get<2>(e));
+    }
+    G.indexEdges();
+
+    std::vector<index> edgeLabels(G.upperEdgeIdBound(), none);
+    std::map<std::pair<node, node>, index> handedOut;
+    G.forEdges([&](node u, node v, edgeweight, edgeid eid) {
+        const std::pair<node, node> pair = key(u, v);
+        edgeLabels[eid] = queued[pair][handedOut[pair]++];
+    });
+
+    return {std::move(G), std::move(edgeLabels)};
 }
 
 /// The cases every algorithm must agree with the reference on.
@@ -323,6 +442,98 @@ inline std::vector<Case> standardCases() {
     cases.push_back(
         {"labelled-no-match", triangle, k4, Semantics::MONOMORPHISM, {1, 1, 1}, {1, 1, 2, 2}});
 
+    // Edge labels. The pattern asks for a 1-edge followed by a 2-edge, and the target carries
+    // three kinds of edge, so a match has to land on the right *kind* and not merely on an edge of
+    // the right shape. Every case below is MONOMORPHISM, because the question here is what an edge
+    // label does and the induced rule constrains non-edges, which carry no labels.
+    const LabelledGraph edgeLabelledPattern = labelledGraphOf(3, {{0, 1, 1}, {1, 2, 2}});
+    const LabelledGraph edgeLabelledTarget =
+        labelledGraphOf(4, {{0, 1, 1}, {1, 2, 2}, {2, 3, 1}, {0, 3, 3}});
+
+    cases.push_back({"edge-labelled-match",
+                     edgeLabelledPattern.G,
+                     edgeLabelledTarget.G,
+                     Semantics::MONOMORPHISM,
+                     {},
+                     {},
+                     edgeLabelledPattern.edgeLabels,
+                     edgeLabelledTarget.edgeLabels});
+
+    // Same shape, and the 3-path still fits structurally - only the label the middle edge carries
+    // has moved. An implementation that ignores edge labels reports matches here.
+    const LabelledGraph nearMissTarget =
+        labelledGraphOf(4, {{0, 1, 1}, {1, 2, 5}, {2, 3, 1}, {0, 3, 3}});
+    cases.push_back({"edge-labelled-near-miss",
+                     edgeLabelledPattern.G,
+                     nearMissTarget.G,
+                     Semantics::MONOMORPHISM,
+                     {},
+                     {},
+                     edgeLabelledPattern.edgeLabels,
+                     nearMissTarget.edgeLabels});
+
+    // `none` is a wildcard on each side independently, exactly as it is for node labels.
+    const LabelledGraph wildcardPattern = labelledGraphOf(3, {{0, 1, none}, {1, 2, 2}});
+    cases.push_back({"edge-labelled-wildcard-on-pattern",
+                     wildcardPattern.G,
+                     edgeLabelledTarget.G,
+                     Semantics::MONOMORPHISM,
+                     {},
+                     {},
+                     wildcardPattern.edgeLabels,
+                     edgeLabelledTarget.edgeLabels});
+
+    const LabelledGraph wildcardTarget =
+        labelledGraphOf(4, {{0, 1, none}, {1, 2, 2}, {2, 3, 1}, {0, 3, none}});
+    cases.push_back({"edge-labelled-wildcard-on-target",
+                     edgeLabelledPattern.G,
+                     wildcardTarget.G,
+                     Semantics::MONOMORPHISM,
+                     {},
+                     {},
+                     edgeLabelledPattern.edgeLabels,
+                     wildcardTarget.edgeLabels});
+
+    // A directed mutual pair is two edges with two ids, so the two directions carry independent
+    // labels. An implementation that keys labels by node pair rather than by arc collides them and
+    // reports the reversed mapping too.
+    const LabelledGraph mutualPattern = labelledGraphOf(2, {{0, 1, 7}}, true);
+    const LabelledGraph mutualTarget = labelledGraphOf(3, {{0, 1, 7}, {1, 0, 8}, {1, 2, 8}}, true);
+    cases.push_back({"directed-mutual-pair-different-labels",
+                     mutualPattern.G,
+                     mutualTarget.G,
+                     Semantics::MONOMORPHISM,
+                     {},
+                     {},
+                     mutualPattern.edgeLabels,
+                     mutualTarget.edgeLabels});
+
+    // Parallel edges. Collapsing two arcs that carry the *same* label is lossless and must keep
+    // working; collapsing two that disagree is not, and is what every algorithm has to refuse
+    // rather than answer - see SearchGraph::collapsedLabelledEdges(). Both are here so that an
+    // over-eager refusal is as visible as a missing one.
+    const LabelledGraph parallelDisagreeing =
+        labelledGraphOf(4, {{0, 1, 1}, {0, 1, 4}, {1, 2, 2}, {2, 3, 1}});
+    cases.push_back({"edge-labelled-parallel-edges-refused",
+                     edgeLabelledPattern.G,
+                     parallelDisagreeing.G,
+                     Semantics::MONOMORPHISM,
+                     {},
+                     {},
+                     edgeLabelledPattern.edgeLabels,
+                     parallelDisagreeing.edgeLabels});
+
+    const LabelledGraph parallelAgreeing =
+        labelledGraphOf(4, {{0, 1, 1}, {0, 1, 1}, {1, 2, 2}, {2, 3, 1}});
+    cases.push_back({"edge-labelled-parallel-edges-same-label",
+                     edgeLabelledPattern.G,
+                     parallelAgreeing.G,
+                     Semantics::MONOMORPHISM,
+                     {},
+                     {},
+                     edgeLabelledPattern.edgeLabels,
+                     parallelAgreeing.edgeLabels});
+
     return cases;
 }
 
@@ -354,7 +565,8 @@ public:
         // 2. Search, reporting each complete mapping and stopping the moment reportMatch()
         //    says so.
         for (const Match &match :
-             referenceMatches(*pattern, *target, semantics, patternLabels, targetLabels)) {
+             referenceMatches(*pattern, *target, semantics, patternLabels, targetLabels,
+                              patternEdgeLabels, targetEdgeLabels)) {
             handler.assureRunning();
             if (!reportMatch(match))
                 break;
@@ -376,20 +588,50 @@ public:
 //     };
 // ---------------------------------------------------------------------------------------------
 
+/// Configure an algorithm with whatever labels the case carries.
+inline void applyLabels(SubgraphIsomorphism &algo, const Case &testCase) {
+    if (!testCase.patternLabels.empty())
+        algo.setLabels(testCase.patternLabels, testCase.targetLabels);
+    if (!testCase.patternEdgeLabels.empty())
+        algo.setEdgeLabels(testCase.patternEdgeLabels, testCase.targetEdgeLabels);
+}
+
+/// Run an algorithm over one corpus case, allowing it to refuse an edge-labelled one.
+///
+/// Edge labels are the single place where an algorithm is allowed a second answer. The module's
+/// rule is that it either honours them or throws from run(); VF2 and VF3 throw today, and RI and
+/// ParallelRI throw on the parallel-edge case. So a `std::runtime_error` on an edge-labelled case
+/// is a pass and the comparison is skipped. Anything else - a refusal of an *unlabelled* case, or a
+/// wrong answer instead of a refusal - is not, which is the whole point of checking rather than
+/// swallowing.
+///
+/// @return true if the run produced results to compare against the reference.
+template <typename Algo>
+bool runAllowingEdgeLabelRefusal(Algo &algo, const Case &testCase) {
+    try {
+        algo->run();
+    } catch (const std::runtime_error &) {
+        EXPECT_FALSE(testCase.patternEdgeLabels.empty())
+            << "case: " << testCase.name << " - only an edge-labelled case may be refused";
+        return false;
+    }
+    return true;
+}
+
 /// Run the algorithm over the whole corpus and assert it reproduces the reference exactly.
 template <typename Construct>
 void expectMatchesReference(Construct construct) {
     for (const Case &testCase : standardCases()) {
-        std::vector<Match> expected =
-            referenceMatches(testCase.pattern, testCase.target, testCase.semantics,
-                             testCase.patternLabels, testCase.targetLabels);
+        std::vector<Match> expected = referenceMatches(
+            testCase.pattern, testCase.target, testCase.semantics, testCase.patternLabels,
+            testCase.targetLabels, testCase.patternEdgeLabels, testCase.targetEdgeLabels);
         sortMatches(expected);
 
         std::unique_ptr<SubgraphIsomorphism> algo =
             construct(testCase.pattern, testCase.target, testCase.semantics, count{0});
-        if (!testCase.patternLabels.empty())
-            algo->setLabels(testCase.patternLabels, testCase.targetLabels);
-        algo->run();
+        applyLabels(*algo, testCase);
+        if (!runAllowingEdgeLabelRefusal(algo, testCase))
+            continue;
 
         std::vector<Match> actual = algo->getMatches();
         sortMatches(actual);
@@ -402,7 +644,8 @@ void expectMatchesReference(Construct construct) {
         // own terms - full width, `none` at pattern gaps, injective, semantics respected.
         for (const Match &match : actual) {
             EXPECT_TRUE(isValidMatch(testCase.pattern, testCase.target, testCase.semantics,
-                                     testCase.patternLabels, testCase.targetLabels, match))
+                                     testCase.patternLabels, testCase.targetLabels, match,
+                                     testCase.patternEdgeLabels, testCase.targetEdgeLabels))
                 << "case: " << testCase.name << " produced a malformed match";
         }
     }
@@ -441,16 +684,15 @@ void expectRespectsMatchCap(Construct construct) {
 template <typename Construct>
 void expectCallbackFormsAgree(Construct construct) {
     for (const Case &testCase : standardCases()) {
-        std::vector<Match> expected =
-            referenceMatches(testCase.pattern, testCase.target, testCase.semantics,
-                             testCase.patternLabels, testCase.targetLabels);
+        std::vector<Match> expected = referenceMatches(
+            testCase.pattern, testCase.target, testCase.semantics, testCase.patternLabels,
+            testCase.targetLabels, testCase.patternEdgeLabels, testCase.targetEdgeLabels);
         sortMatches(expected);
 
         const auto build = [&]() {
             std::unique_ptr<SubgraphIsomorphism> algo =
                 construct(testCase.pattern, testCase.target, testCase.semantics, count{0});
-            if (!testCase.patternLabels.empty())
-                algo->setLabels(testCase.patternLabels, testCase.targetLabels);
+            applyLabels(*algo, testCase);
             return algo;
         };
 
@@ -460,7 +702,8 @@ void expectCallbackFormsAgree(Construct construct) {
             std::vector<Match> collected;
             std::unique_ptr<SubgraphIsomorphism> algo = build();
             algo->setCallback([&](const std::vector<node> &match) { collected.push_back(match); });
-            algo->run();
+            if (!runAllowingEdgeLabelRefusal(algo, testCase))
+                continue;
 
             sortMatches(collected);
             EXPECT_EQ(collected, expected) << "case: " << testCase.name << " (serial callback)";
