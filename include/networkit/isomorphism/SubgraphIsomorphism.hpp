@@ -103,6 +103,11 @@ namespace NetworKit {
  * - **The argument order is (pattern, target)**, which is the opposite of igraph's
  *   `igraph_subisomorphic_vf2`. Swapping the two compiles fine and answers a different question.
  * - Pattern and target must agree on directedness; mixing them throws from the constructor.
+ * - **The two graphs are held by reference, not copied**, so both must outlive the algorithm
+ *   object. They may be modified in between, but everything configured beforehand is rechecked
+ *   when @ref run() starts: adding a node or an edge after @ref setNodeLabels() or
+ *   @ref setEdgeLabels() leaves the label vector too short, and @ref run() then throws instead of
+ *   reading past its end. Set the labels again at the new sizes and the run succeeds.
  *
  * ## What this class contributes
  *
@@ -451,7 +456,12 @@ protected:
     bool storesMatches() const noexcept { return storeMatches && !hasCallback(); }
 
     /**
-     * Step 1 of the protocol: forget the results of any earlier run.
+     * Step 1 of the protocol: forget the results of any earlier run, then recheck the input.
+     *
+     * The recheck matters because both graphs are held by pointer: anything the caller changed
+     * since construction is caught here, throwing `std::runtime_error`, rather than being read
+     * out of bounds mid-search. It runs after the reset, so a rejected run leaves nothing
+     * queryable.
      */
     void prepareRun();
 
@@ -539,12 +549,38 @@ private:
      * Reject inputs no search can handle, throwing `std::runtime_error`.
      *
      * Called from the constructor, so bad input fails immediately rather than deep inside
-     * @ref run(). Rejects a directedness mismatch and self-loops in the pattern.
+     * @ref run(), and again from @ref prepareRun(), because the graphs are held by pointer and
+     * the caller may have changed them in between. Rejects a directedness mismatch and
+     * self-loops in the pattern.
      *
-     * Deliberately not virtual: it runs while the derived part of the object is still
+     * Deliberately not virtual: it first runs while the derived part of the object is still
      * uninitialized, so an override would never be reached.
      */
     void validateInput() const;
+
+    /**
+     * Reject node label vectors that do not fit the graphs, throwing `std::runtime_error`.
+     *
+     * Takes the vectors as arguments rather than reading the members, so @ref setNodeLabels()
+     * can check *before* assigning and a rejected call leaves the object untouched, while
+     * @ref prepareRun() passes the members to recheck them against the current graphs. Two empty
+     * vectors are the documented way to clear the labels and are always accepted.
+     */
+    void validateNodeLabels(const std::vector<index> &patternNodeLabels,
+                            const std::vector<index> &targetNodeLabels) const;
+
+    /**
+     * Reject edge label vectors that do not fit the graphs, throwing `std::runtime_error`.
+     *
+     * The edge-side counterpart of @ref validateNodeLabels(), and used the same way. Also
+     * rejects graphs without edge ids, since the vectors are indexed by edge id.
+     *
+     * Partly belt and braces: the algorithms that honour edge labels hand the vector to
+     * `SearchGraph`, whose constructor checks it again while building the snapshot. The node
+     * label vector has no such second reader, which is why the recheck matters more there.
+     */
+    void validateEdgeLabels(const std::vector<index> &patternEdgeLabels,
+                            const std::vector<index> &targetEdgeLabels) const;
 
     std::vector<Match> result;
 

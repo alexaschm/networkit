@@ -482,4 +482,105 @@ TEST_F(SubgraphIsomorphismGTest, testParallelEdgesWithDisagreeingLabelsAreRefuse
                   .size());
 }
 
+// ------------------------------------------------------------------------------------------
+// Revalidation at run()
+//
+// The two graphs are held by pointer, so everything checked at construction or configuration
+// time can go stale before run() is reached. These pin down that run() rechecks rather than
+// trusting what was true earlier - the label cases especially, where a short vector is an
+// out-of-bounds read rather than merely a wrong answer.
+// ------------------------------------------------------------------------------------------
+
+TEST_F(SubgraphIsomorphismGTest, testRunRechecksGraphInvariants) {
+
+    Graph pattern = graphOf(3, {{0, 1}, {1, 2}});
+    const Graph target = graphOf(4, {{0, 1}, {1, 2}, {2, 3}});
+
+    VF2 algo(pattern, target, Semantics::MONOMORPHISM);
+    ASSERT_NO_THROW(algo.run());
+
+    // The constructor rejected self-loops in the pattern. Adding one afterwards must not sneak
+    // an undefined query past that check.
+    pattern.addEdge(1, 1);
+    ASSERT_EQ(pattern.numberOfSelfLoops(), 1u);
+
+    EXPECT_THROW(algo.run(), std::runtime_error)
+        << "a self-loop added to the pattern after construction must still be rejected";
+    EXPECT_FALSE(algo.hasFinished());
+}
+
+TEST_F(SubgraphIsomorphismGTest, testRunRechecksNodeLabelSizes) {
+
+    const Graph pattern = graphOf(2, {{0, 1}});
+    Graph target = graphOf(3, {{0, 1}, {1, 2}});
+
+    VF2 algo(pattern, target, Semantics::MONOMORPHISM);
+    algo.setNodeLabels({1, 1}, {1, 1, 1});
+    ASSERT_NO_THROW(algo.run());
+
+    // The label vector was sized against the target as it was. One more node and it is short,
+    // which without the recheck is a read past its end rather than an error.
+    target.addNode();
+    ASSERT_GT(target.upperNodeIdBound(), 3u);
+
+    EXPECT_THROW(algo.run(), std::runtime_error)
+        << "a node added after setNodeLabels() leaves the label vector short";
+    EXPECT_FALSE(algo.hasFinished());
+
+    // Re-supplying the labels at the new size is all it takes to make the run legal again.
+    algo.setNodeLabels({1, 1}, {1, 1, 1, 1});
+    EXPECT_NO_THROW(algo.run());
+    EXPECT_TRUE(algo.hasFinished());
+}
+
+TEST_F(SubgraphIsomorphismGTest, testRunRechecksEdgeLabelSizes) {
+
+    const IsomorphismTest::LabelledGraph pattern = IsomorphismTest::labelledGraphOf(2, {{0, 1, 1}});
+    IsomorphismTest::LabelledGraph target =
+        IsomorphismTest::labelledGraphOf(3, {{0, 1, 1}, {1, 2, 1}});
+
+    // RI honours edge labels, so it reaches the size check rather than refusing them outright
+    // the way VF2 does. Unlike the node label case above, this one has a second line of defence:
+    // SearchGraph's constructor validates the edge label vector while building the snapshot, so
+    // it would throw here even without prepareRun(). The test pins the guarantee at the run()
+    // boundary rather than to whichever layer happens to enforce it.
+    RI algo(pattern.G, target.G, RI::Variant::RI, Semantics::MONOMORPHISM);
+    algo.setEdgeLabels(pattern.edgeLabels, target.edgeLabels);
+    ASSERT_NO_THROW(algo.run());
+
+    const index boundBefore = target.G.upperEdgeIdBound();
+    target.G.addEdge(0, 2);
+    target.G.indexEdges(true);
+    ASSERT_GT(target.G.upperEdgeIdBound(), boundBefore);
+
+    EXPECT_THROW(algo.run(), std::runtime_error)
+        << "an edge added after setEdgeLabels() leaves the edge label vector short";
+    EXPECT_FALSE(algo.hasFinished());
+
+    std::vector<index> grown = target.edgeLabels;
+    grown.resize(target.G.upperEdgeIdBound(), 1);
+    algo.setEdgeLabels(pattern.edgeLabels, grown);
+    EXPECT_NO_THROW(algo.run());
+    EXPECT_TRUE(algo.hasFinished());
+}
+
+TEST_F(SubgraphIsomorphismGTest, testRunRechecksLeaveNothingQueryableWhenTheyFire) {
+
+    const Graph pattern = graphOf(2, {{0, 1}});
+    Graph target = graphOf(3, {{0, 1}, {1, 2}});
+
+    VF2 algo(pattern, target, Semantics::MONOMORPHISM);
+    algo.setNodeLabels({1, 1}, {1, 1, 1});
+    ASSERT_NO_THROW(algo.run());
+    ASSERT_GT(algo.numberOfMatches(), 0u);
+
+    target.addNode();
+    ASSERT_THROW(algo.run(), std::runtime_error);
+
+    // The recheck runs after the reset on purpose: a rejected run must not hand back the matches
+    // of the run before it.
+    EXPECT_FALSE(algo.hasFinished());
+    EXPECT_THROW(algo.getMatches(), std::runtime_error);
+}
+
 } // namespace NetworKit
