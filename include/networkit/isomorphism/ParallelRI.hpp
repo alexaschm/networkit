@@ -83,7 +83,7 @@ public:
      * @param semantics Whether matches must be induced. See @ref SubgraphIsomorphism::Semantics.
      * @param maxMatches Stop after this many matches; 0 means no limit.
      */
-    ParallelRI(const Graph &pattern, const Graph &target, RI::Variant variant = RI::Variant::RI_DS,
+    ParallelRI(const Graph &pattern, const Graph &target, RI::Variant variant = RI::Variant::RI,
                Semantics semantics = Semantics::INDUCED, count maxMatches = 0);
 
     /**

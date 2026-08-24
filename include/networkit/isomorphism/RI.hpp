@@ -42,11 +42,26 @@ namespace NetworKit {
  * @ref Variant::RI_DS adds **domains**: before the search starts, it works out for each pattern
  * node which target nodes could host it at all - judged from labels and degrees, then narrowed
  * once by checking that each of the node's pattern neighbours still has somewhere to go across a
- * real target edge - and then uses those sets to shrink every candidate list during the search.
- * The order is the same as plain RI's; there is no domain-size tie-break. Nor is there any forward
+ * real target edge - and then uses those sets to shrink candidate lists during the search. The
+ * order is the same as plain RI's; there is no domain-size tie-break. Nor is there any forward
  * checking or other per-step inference, because the paper measured that the extra pruning does not
- * pay for what it costs. Domains are computed once, cost a single pass up front, and pay off on
- * labelled, sparse and disconnected patterns, which is why RI_DS is the default.
+ * pay for what it costs.
+ *
+ * Only part of what a domain knows is new, though. Ruling a target node out on its degree or its
+ * label is something the search already does for each candidate it looks at, at the cost of a
+ * couple of integer compares; only the narrowing step finds anything those per-candidate rules
+ * miss. So a domain is consulted for a candidate list drawn from a neighbourhood only when the
+ * narrowing removed most of that domain, and is otherwise left aside as the more expensive way to
+ * reach the same answer. What a domain always does is replace the scan over every node in the
+ * target that a pattern node with no already-mapped neighbour would otherwise need - which is why
+ * it helps most on a disconnected pattern.
+ *
+ * Even so, building the domains costs a pass over the target per pattern node, and on the graphs
+ * this has been measured against that pass is rarely repaid: on a long enumeration the two
+ * variants land within about a percent of each other, and plain RI is ahead whenever the search is
+ * short enough for the setup to show. @ref Variant::RI is therefore the default. Reach for RI_DS
+ * when the pattern is disconnected, or when the labels are selective enough that the narrowing
+ * step really bites.
  *
  * ## When to use it
  *
@@ -89,10 +104,11 @@ public:
      */
     enum class Variant : uint8_t {
         /// Plain RI: order by the three-level score described above, and search with no
-        /// bookkeeping at all.
+        /// bookkeeping at all. The default.
         RI,
-        /// RI-DS: the same order, plus per-node candidate domains computed once before the search
-        /// and used to shrink every candidate list. Costs one pass up front; usually worth it.
+        /// RI-DS: the same order, plus per-node candidate domains computed once before the search.
+        /// Costs a pass over the target per pattern node, which pays for itself mainly on
+        /// disconnected patterns and on selectively labelled inputs.
         RI_DS
     };
 
@@ -103,7 +119,7 @@ public:
      * @param semantics Whether matches must be induced. See @ref SubgraphIsomorphism::Semantics.
      * @param maxMatches Stop after this many matches; 0 means no limit.
      */
-    RI(const Graph &pattern, const Graph &target, Variant variant = Variant::RI_DS,
+    RI(const Graph &pattern, const Graph &target, Variant variant = Variant::RI,
        Semantics semantics = Semantics::INDUCED, count maxMatches = 0);
 
     /**
