@@ -100,6 +100,14 @@ namespace NetworKit {
  * - **Self-loops in the pattern are rejected** by the constructor. Self-loops in the *target* are
  *   fine and are simply never used, because both semantics only constrain pairs of distinct
  *   nodes.
+ * - **Parallel edges are collapsed.** The search runs on the simple graph underlying each input.
+ *   Multiplicity cannot change which matches exist - both semantics only ever ask whether a pair
+ *   of distinct nodes is joined, which is a yes-or-no question that a second copy of an edge does
+ *   not change - so this normalization is what keeps degrees honest and stops the same candidate
+ *   being enumerated, and reported, twice. `Graph::addEdge()` permits parallel edges by default,
+ *   so this is reachable without doing anything unusual. Edge labels are the one exception: two
+ *   parallel edges carrying *different* labels cannot collapse into one arc that stands for both,
+ *   and @ref setEdgeLabels() documents how that is refused rather than papered over.
  * - **The argument order is (pattern, target)**, which is the opposite of igraph's
  *   `igraph_subisomorphic_vf2`. Swapping the two compiles fine and answers a different question.
  * - Pattern and target must agree on directedness; mixing them throws from the constructor.
