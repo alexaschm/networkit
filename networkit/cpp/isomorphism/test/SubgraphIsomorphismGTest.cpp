@@ -86,7 +86,7 @@ public:
         /// One per worker. Padded so two workers never write to the same cache line, which is
         /// what makes the unsynchronized accumulation below legitimate.
         struct alignas(64) Slot {
-            std::vector<std::vector<node>> buffer;
+            std::vector<Match> buffer;
             count found = 0;
         };
         std::vector<Slot> slots(numWorkers);
@@ -109,11 +109,11 @@ public:
 
         handler.assureRunning();
 
-        std::vector<std::vector<node>> merged;
+        std::vector<Match> merged;
         count found = 0;
         for (Slot &slot : slots) {
             found += slot.found;
-            for (std::vector<node> &match : slot.buffer)
+            for (Match &match : slot.buffer)
                 merged.push_back(std::move(match));
         }
 
@@ -171,7 +171,7 @@ TEST_F(SubgraphIsomorphismGTest, testSerialCallbackIsNeverEnteredConcurrently) {
     std::vector<Match> collected;
 
     MultiWorkerReporter algo(pattern, target, Semantics::MONOMORPHISM, 4);
-    algo.setCallback([&](const std::vector<node> &match) {
+    algo.setCallback([&](const Match &match) {
         const int now = inside.fetch_add(1, std::memory_order_acq_rel) + 1;
 
         int previousMax = maxObserved.load(std::memory_order_relaxed);
@@ -211,7 +211,7 @@ TEST_F(SubgraphIsomorphismGTest, testParallelCallbackReceivesEveryMatchOnce) {
     std::vector<std::vector<Match>> perWorker(numWorkers);
 
     MultiWorkerReporter algo(pattern, target, Semantics::MONOMORPHISM, numWorkers);
-    algo.setCallback([&](index tid, const std::vector<node> &match) {
+    algo.setCallback([&](index tid, const Match &match) {
         ASSERT_LT(tid, numWorkers);
         perWorker[tid].push_back(match); // no lock needed: each tid owns its slot
     });
@@ -303,7 +303,7 @@ TEST_F(SubgraphIsomorphismGTest, testWorkerIdsStayBelowNumberOfWorkers) {
     std::vector<count> seen(algo.numberOfWorkers(), 0);
     std::atomic<count> outOfRange{0};
 
-    algo.setCallback([&](index tid, const std::vector<node> &) {
+    algo.setCallback([&](index tid, const Match &) {
         if (tid >= seen.size()) {
             outOfRange.fetch_add(1, std::memory_order_relaxed);
             return;
@@ -332,7 +332,7 @@ TEST_F(SubgraphIsomorphismGTest, testInterruptLeavesTheAlgorithmUnfinished) {
     IsomorphismTest::ReferenceSubgraphIsomorphism algo(pattern, target, Semantics::MONOMORPHISM);
 
     count delivered = 0;
-    algo.setCallback([&](const std::vector<node> &) {
+    algo.setCallback([&](const Match &) {
         // Interrupt partway through, so the search is genuinely mid-flight.
         if (++delivered == 5)
             GlobalState::setReceivedSIGINT(true);

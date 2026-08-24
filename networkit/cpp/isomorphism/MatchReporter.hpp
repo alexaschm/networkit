@@ -7,6 +7,7 @@
 #include <vector>
 
 #include <networkit/Globals.hpp>
+#include <networkit/isomorphism/SubgraphIsomorphism.hpp>
 
 namespace NetworKit {
 namespace IsomorphismDetails {
@@ -20,13 +21,13 @@ namespace IsomorphismDetails {
  * passes that down:
  *
  * @code
- * VF2Impl(..., [this](const std::vector<node> &m) { return reportMatch(m); }).run();
+ * VF2Impl(..., [this](const SubgraphIsomorphism::Match &m) { return reportMatch(m); }).run();
  * @endcode
  *
  * @param match The mapping, indexed by pattern node.
  * @return false once the search must stop, because the requested number of matches is reached.
  */
-using MatchReporter = std::function<bool(const std::vector<node> &)>;
+using MatchReporter = std::function<bool(const SubgraphIsomorphism::Match &)>;
 
 } // namespace IsomorphismDetails
 } // namespace NetworKit

@@ -135,7 +135,7 @@ void SubgraphIsomorphism::prepareRun() {
     matchCount = 0;
 }
 
-bool SubgraphIsomorphism::reportMatch(const std::vector<node> &match) {
+bool SubgraphIsomorphism::reportMatch(const Match &match) {
     ++matchCount;
 
     // Single-threaded, so the serial callback needs no lock and the parallel one is simply told
@@ -150,7 +150,7 @@ bool SubgraphIsomorphism::reportMatch(const std::vector<node> &match) {
     return maxMatches == 0 || matchCount < maxMatches;
 }
 
-bool SubgraphIsomorphism::invokeCallback(index tid, const std::vector<node> &match) {
+bool SubgraphIsomorphism::invokeCallback(index tid, const Match &match) {
     if (parallelCallback) {
         parallelCallback(tid, match);
         return true;
@@ -175,7 +175,7 @@ void SubgraphIsomorphism::finishRun() {
     hasRun = true;
 }
 
-void SubgraphIsomorphism::finishRun(std::vector<std::vector<node>> &&matches, count found) {
+void SubgraphIsomorphism::finishRun(std::vector<Match> &&matches, count found) {
     matchCount = found;
     if (!hasCallback() && storeMatches)
         result = std::move(matches);
@@ -191,7 +191,7 @@ void SubgraphIsomorphism::finishRun(std::vector<std::vector<node>> &&matches, co
     hasRun = true;
 }
 
-const std::vector<std::vector<node>> &SubgraphIsomorphism::getMatches() const {
+const std::vector<SubgraphIsomorphism::Match> &SubgraphIsomorphism::getMatches() const {
     if (hasCallback())
         throw std::runtime_error(
             "SubgraphIsomorphism used with a callback does not store the matches");

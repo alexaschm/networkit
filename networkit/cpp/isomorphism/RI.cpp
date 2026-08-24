@@ -39,7 +39,7 @@ void RI::run() {
         patternGraph, targetGraph, patternNodeLabels, targetNodeLabels, variant);
 
     RIImpl(patternGraph, targetGraph, patternNodeLabels, targetNodeLabels, ordering, semantics,
-           variant, handler, [this](const std::vector<node> &match) { return reportMatch(match); })
+           variant, handler, [this](const Match &match) { return reportMatch(match); })
         .run();
 
     // RIImpl may only poll isRunning(), so an interrupted search just returns. Without this, that

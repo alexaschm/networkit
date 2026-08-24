@@ -351,7 +351,7 @@ private:
     std::vector<bool> domainEarnsItsKeep;
 
     /// Reused buffer handed to the reporter, indexed by pattern node. Sized by the constructor.
-    std::vector<node> matchBuffer;
+    SubgraphIsomorphism::Match matchBuffer;
 
     /// Scratch for candidatesFor(), reused so that expanding a state costs no allocation. A flat
     /// stack: recurse() gives each depth the half-open window it appended and pops it on the way

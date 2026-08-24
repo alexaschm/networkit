@@ -29,9 +29,7 @@ namespace IsomorphismTest {
 
 using Semantics = SubgraphIsomorphism::Semantics;
 
-/// One match, in the shape the module defines: indexed by pattern node, sized to the pattern's
-/// upperNodeIdBound(), holding `none` at ids that are not nodes.
-using Match = std::vector<node>;
+using Match = SubgraphIsomorphism::Match;
 
 // ---------------------------------------------------------------------------------------------
 // The reference matcher
@@ -701,7 +699,7 @@ void expectCallbackFormsAgree(Construct construct) {
         {
             std::vector<Match> collected;
             std::unique_ptr<SubgraphIsomorphism> algo = build();
-            algo->setCallback([&](const std::vector<node> &match) { collected.push_back(match); });
+            algo->setCallback([&](const Match &match) { collected.push_back(match); });
             if (!runAllowingEdgeLabelRefusal(algo, testCase))
                 continue;
 
@@ -717,7 +715,7 @@ void expectCallbackFormsAgree(Construct construct) {
         {
             std::unique_ptr<SubgraphIsomorphism> algo = build();
             std::vector<std::vector<Match>> perWorker(algo->numberOfWorkers());
-            algo->setCallback([&](index tid, const std::vector<node> &match) {
+            algo->setCallback([&](index tid, const Match &match) {
                 ASSERT_LT(tid, perWorker.size());
                 perWorker[tid].push_back(match);
             });

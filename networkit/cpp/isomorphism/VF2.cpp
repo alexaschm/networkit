@@ -626,7 +626,7 @@ void VF2::run() {
     Aux::SignalHandler handler;
     prepareRun();
     VF2Impl(*pattern, *target, patternNodeLabels, targetNodeLabels, semantics, handler,
-            [this](const std::vector<node> &match) { return reportMatch(match); })
+            [this](const Match &match) { return reportMatch(match); })
         .run();
     finishRun();
 }

@@ -365,7 +365,7 @@ TEST_P(RIGTest, testExpandAgreesWithRun) {
         std::vector<Match> viaRun;
         RIImpl(snapshot.pattern, snapshot.target, testCase.patternNodeLabels,
                testCase.targetNodeLabels, ordering, testCase.semantics, variant, handler,
-               [&viaRun](const std::vector<node> &match) {
+               [&viaRun](const Match &match) {
                    viaRun.push_back(match);
                    return true;
                })
@@ -374,7 +374,7 @@ TEST_P(RIGTest, testExpandAgreesWithRun) {
         std::vector<Match> viaExpand;
         RIImpl expander(snapshot.pattern, snapshot.target, testCase.patternNodeLabels,
                         testCase.targetNodeLabels, ordering, testCase.semantics, variant, handler,
-                        [&viaExpand](const std::vector<node> &match) {
+                        [&viaExpand](const Match &match) {
                             viaExpand.push_back(match);
                             return true;
                         });

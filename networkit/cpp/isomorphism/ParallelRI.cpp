@@ -20,6 +20,8 @@ namespace NetworKit {
 
 namespace {
 
+using Match = SubgraphIsomorphism::Match;
+
 using IsomorphismDetails::RIImpl;
 using IsomorphismDetails::SearchGraph;
 
@@ -67,7 +69,7 @@ class ParallelRIImpl {
 public:
     /// Hands one match to the user's callback. Thread-safe; returns true if a callback took it,
     /// in which case this class must not store it.
-    using Deliver = std::function<bool(index, const std::vector<node> &)>;
+    using Deliver = std::function<bool(index, const Match &)>;
 
     /**
      * @param patternGraph Shared read-only snapshot of the pattern.
@@ -118,7 +120,7 @@ public:
      *  1. Seed the roots with seedRoots(). `workers` is already sized by the constructor.
      *  2. Open an `omp parallel num_threads(numWorkers)` region. Inside it, give each thread its
      *     own RIImpl built from the shared snapshots, the shared ordering and a reporter bound to
-     *     that thread - `[this, tid](const std::vector<node> &m) { return recordMatch(tid, m); }` -
+     *     that thread - `[this, tid](const Match &m) { return recordMatch(tid, m); }` -
      *     then call workerLoop(tid).
      *  3. That is all - the loop below handles work, stealing and termination. Do not touch the
      *     algorithm object from inside the region; recordMatch() is the only channel out.
@@ -140,8 +142,8 @@ public:
      *
      * Call once, after @ref run() has returned and every worker has joined.
      */
-    std::vector<std::vector<node>> takeMatches() {
-        std::vector<std::vector<node>> merged;
+    std::vector<Match> takeMatches() {
+        std::vector<Match> merged;
         if (!storeMatches)
             return merged;
 
@@ -151,7 +153,7 @@ public:
 
         merged.reserve(total);
         for (Worker &worker : workers) {
-            for (std::vector<node> &match : worker.buffer)
+            for (Match &match : worker.buffer)
                 merged.push_back(std::move(match));
             worker.buffer.clear();
             worker.buffer.shrink_to_fit();
@@ -179,7 +181,7 @@ private:
         /// How many states have been expanded since the last batch was published for stealing.
         count sinceLastPublish = 0;
         /// Matches this worker found and kept. Merged by takeMatches() after the join.
-        std::vector<std::vector<node>> buffer;
+        std::vector<Match> buffer;
         /// How many matches this worker reported, whether or not they were kept.
         count found = 0;
         /// Counts down to the next publication of `found`; only used when maxMatches != 0.
@@ -195,7 +197,7 @@ private:
      *
      * @return true to keep searching, false once the cap has been reached.
      */
-    bool recordMatch(index tid, const std::vector<node> &match) {
+    bool recordMatch(index tid, const Match &match) {
         Worker &worker = workers[tid];
         ++worker.found;
 
@@ -425,7 +427,7 @@ void ParallelRI::run() {
     ParallelRIImpl impl(
         patternGraph, targetGraph, patternNodeLabels, targetNodeLabels, ordering, semantics,
         variant, handler,
-        [this](index tid, const std::vector<node> &match) { return invokeCallback(tid, match); },
+        [this](index tid, const Match &match) { return invokeCallback(tid, match); },
         storesMatches(), maxMatches, numWorkers);
     impl.run();
 

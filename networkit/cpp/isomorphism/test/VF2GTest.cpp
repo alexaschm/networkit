@@ -82,7 +82,7 @@ TEST_F(VF2GTest, testTrivialCases) {
 
     EXPECT_TRUE(vf1.hasMatch());
     EXPECT_EQ(vf1.numberOfMatches(), 1);
-    EXPECT_EQ(vf1.getMatches(), std::vector<std::vector<node>>{{}});
+    EXPECT_EQ(vf1.getMatches(), std::vector<IsomorphismTest::Match>{{}});
 
     // Empty pattern, directed
     Graph pattern2 = Graph(0, false, true);
@@ -93,7 +93,7 @@ TEST_F(VF2GTest, testTrivialCases) {
 
     EXPECT_TRUE(vf2.hasMatch());
     EXPECT_EQ(vf2.numberOfMatches(), 1);
-    EXPECT_EQ(vf2.getMatches(), std::vector<std::vector<node>>{{}});
+    EXPECT_EQ(vf2.getMatches(), std::vector<IsomorphismTest::Match>{{}});
 
     // Pattern with more nodes than target, undirected
     Graph pattern3 = Graph(4);
@@ -104,7 +104,7 @@ TEST_F(VF2GTest, testTrivialCases) {
 
     EXPECT_FALSE(vf3.hasMatch());
     EXPECT_EQ(vf3.numberOfMatches(), 0);
-    EXPECT_EQ(vf3.getMatches(), std::vector<std::vector<node>>{});
+    EXPECT_EQ(vf3.getMatches(), std::vector<IsomorphismTest::Match>{});
 
     // Pattern with more nodes than target, directed
     Graph pattern4 = Graph(4, false, true);
@@ -115,7 +115,7 @@ TEST_F(VF2GTest, testTrivialCases) {
 
     EXPECT_FALSE(vf4.hasMatch());
     EXPECT_EQ(vf4.numberOfMatches(), 0);
-    EXPECT_EQ(vf4.getMatches(), std::vector<std::vector<node>>{});
+    EXPECT_EQ(vf4.getMatches(), std::vector<IsomorphismTest::Match>{});
 
     // Pattern with higher maximum degree than target, undirected
     Graph pattern5 = IsomorphismTest::graphOf(4, {{0, 1}, {0, 2}, {0, 3}});
@@ -126,7 +126,7 @@ TEST_F(VF2GTest, testTrivialCases) {
 
     EXPECT_FALSE(vf5.hasMatch());
     EXPECT_EQ(vf5.numberOfMatches(), 0);
-    EXPECT_EQ(vf5.getMatches(), std::vector<std::vector<node>>{});
+    EXPECT_EQ(vf5.getMatches(), std::vector<IsomorphismTest::Match>{});
 
     // Pattern with higher maximum in-degree than target, directed
     Graph pattern6 = IsomorphismTest::graphOf(4, {{1, 0}, {2, 0}, {3, 0}}, true);
@@ -137,7 +137,7 @@ TEST_F(VF2GTest, testTrivialCases) {
 
     EXPECT_FALSE(vf6.hasMatch());
     EXPECT_EQ(vf6.numberOfMatches(), 0);
-    EXPECT_EQ(vf6.getMatches(), std::vector<std::vector<node>>{});
+    EXPECT_EQ(vf6.getMatches(), std::vector<IsomorphismTest::Match>{});
 
     // Pattern with higher maximum out-degree than target, directed
     Graph pattern7 = IsomorphismTest::graphOf(4, {{0, 1}, {0, 2}, {0, 3}}, true);
@@ -148,7 +148,7 @@ TEST_F(VF2GTest, testTrivialCases) {
 
     EXPECT_FALSE(vf7.hasMatch());
     EXPECT_EQ(vf7.numberOfMatches(), 0);
-    EXPECT_EQ(vf7.getMatches(), std::vector<std::vector<node>>{});
+    EXPECT_EQ(vf7.getMatches(), std::vector<IsomorphismTest::Match>{});
 }
 
 TEST_F(VF2GTest, testMatchesReference) {

@@ -26,8 +26,8 @@ namespace NetworKit {
  * the edges 0-1, 1-2, 2-0. The target is your network. Every match tells you three target nodes
  * that form a triangle.
  *
- * A match is a `std::vector<node>` that is **indexed by pattern node**: `match[u]` is the target
- * node that pattern node @a u was mapped to. So for the triangle pattern above, a match of
+ * A match is a @ref Match - a `std::vector<node>` **indexed by pattern node**: `match[u]` is the
+ * target node that pattern node @a u was mapped to. So for the triangle pattern above, a match of
  * `{17, 42, 8}` means pattern node 0 sits on target node 17, pattern node 1 on target node 42 and
  * pattern node 2 on target node 8 - and the target really does contain the edges 17-42, 42-8 and
  * 8-17.
@@ -157,6 +157,17 @@ public:
     };
 
     /**
+     * One match, in the shape this module defines everywhere.
+     *
+     * Indexed by **pattern node**: `match[u]` is the target node that pattern node @a u was
+     * mapped to. Sized to the pattern's `upperNodeIdBound()`, holding @ref none at ids that are
+     * not nodes, so a pattern with removed ids still indexes directly.
+     *
+     * A plain alias rather than a distinct type, so any `std::vector<node>` still passes.
+     */
+    using Match = std::vector<node>;
+
+    /**
      * Callback handed one match at a time, instead of collecting them all in memory.
      *
      * The argument is the mapping indexed by pattern node, exactly what @ref getMatches() would
@@ -170,7 +181,7 @@ public:
      * The reference points at an internal buffer that is reused for the next match. Copy the
      * vector if you need to keep it.
      */
-    using MatchCallback = std::function<void(const std::vector<node> &)>;
+    using MatchCallback = std::function<void(const Match &)>;
 
     /**
      * Same as @ref MatchCallback, but it also receives the id of the worker that found the match.
@@ -181,7 +192,7 @@ public:
      *
      * @code
      * std::vector<Acc> perThread(algo.numberOfWorkers());
-     * algo.setCallback([&](index tid, const std::vector<node> &match) {
+     * algo.setCallback([&](index tid, const Match &match) {
      *     perThread[tid].add(match);   // no lock needed, each tid owns its slot
      * });
      * @endcode
@@ -191,7 +202,7 @@ public:
      *
      * The reference points at an internal buffer that is reused for the next match.
      */
-    using ParallelMatchCallback = std::function<void(index, const std::vector<node> &)>;
+    using ParallelMatchCallback = std::function<void(index, const Match &)>;
 
     ~SubgraphIsomorphism() override = default;
 
@@ -328,7 +339,7 @@ public:
      *
      * @return the matches, each a vector of target node ids.
      */
-    const std::vector<std::vector<node>> &getMatches() const;
+    const std::vector<Match> &getMatches() const;
 
     /**
      * How many matches were found. Works regardless of whether they were stored.
@@ -456,7 +467,7 @@ protected:
      * @return true to keep searching, false once the requested number of matches is reached. A
      *         search must stop as soon as this returns false.
      */
-    bool reportMatch(const std::vector<node> &match);
+    bool reportMatch(const Match &match);
 
     /**
      * How many more matches a sequential search may report, or @ref none if there is no cap.
@@ -486,7 +497,7 @@ protected:
      * @param match The mapping, indexed by pattern node.
      * @return true if a callback consumed the match, in which case the caller must not store it.
      */
-    bool invokeCallback(index tid, const std::vector<node> &match);
+    bool invokeCallback(index tid, const Match &match);
 
     /**
      * Step 3 of the protocol, sequential: apply the cap and mark the run as finished.
@@ -502,7 +513,7 @@ protected:
      * @param matches The workers' buffers concatenated. Empty when nothing was stored.
      * @param found How many matches were reported in total, stored or not.
      */
-    void finishRun(std::vector<std::vector<node>> &&matches, count found);
+    void finishRun(std::vector<Match> &&matches, count found);
 
     /// The graph we are looking for. Never null, never modified.
     const Graph *pattern;
@@ -535,7 +546,7 @@ private:
      */
     void validateInput() const;
 
-    std::vector<std::vector<node>> result;
+    std::vector<Match> result;
 
     MatchCallback callback;
     ParallelMatchCallback parallelCallback;
