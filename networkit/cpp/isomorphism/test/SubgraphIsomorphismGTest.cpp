@@ -59,8 +59,9 @@ Graph completeGraph(count n) {
 }
 
 /// Reports a precomputed match set from several threads at once, accumulating per worker exactly
-/// as ParallelRI is expected to. Exists only to put load on the base class's parallel reporting
-/// path, which is otherwise unreachable until ParallelRI is implemented.
+/// as ParallelRI does. Exists so that the base class's parallel reporting path is exercised by
+/// something that reports a *known* match set, which keeps a failure here about the base class
+/// rather than about whichever search produced the matches.
 ///
 /// This is also the shortest worked example of the parallel half of the protocol: the base class
 /// does not collect for you, so a worker buffers its own matches, counts its own, and the merged
@@ -151,7 +152,8 @@ TEST_F(SubgraphIsomorphismGTest, testSerialCallbackIsNeverEnteredConcurrently) {
 
     // The guarantee MatchCallback makes, and the one the module got wrong before invokeCallback()
     // took the lock itself: ParallelRIImpl was handed a "serialize this" flag, but the reporting
-    // call lives inside RIImpl several levels down, which had no way to act on it.
+    // call lives inside RIImpl several levels down, which had no way to act on it. ParallelRIGTest
+    // asserts the same thing through the real search; this one pins it to the base class.
     // A 4-path in K8: 8 * 7 * 6 * 5 = 1680 matches, so the four workers really do pile into the
     // callback rather than taking turns by accident.
     const Graph pattern = graphOf(4, {{0, 1}, {1, 2}, {2, 3}});
@@ -428,17 +430,24 @@ TEST_F(SubgraphIsomorphismGTest, testAlgorithmsThatCannotHonourEdgeLabelsRefuseT
     EXPECT_TRUE(unlabelled.hasFinished());
 
     // The mirror assertion: an algorithm that does understand edge labels must not refuse them.
-    // RI honours them, so it answers - and answers the labelled question, not the unlabelled one,
-    // which is why the count is compared against the reference rather than merely being nonzero.
-    // ParallelRI will join it once its worker pool is written; today it still says logic_error,
-    // which is a different failure from a refusal.
+    // RI and ParallelRI honour them, so they answer - and answer the labelled question, not the
+    // unlabelled one, which is why the count is compared against the reference rather than merely
+    // being nonzero.
+    const count labelled = referenceMatches(pattern.G, target.G, Semantics::MONOMORPHISM, {}, {},
+                                            pattern.edgeLabels, target.edgeLabels)
+                               .size();
+
     RI ri(pattern.G, target.G, RI::Variant::RI, Semantics::MONOMORPHISM);
     ri.setEdgeLabels(pattern.edgeLabels, target.edgeLabels);
     EXPECT_NO_THROW(ri.run());
     EXPECT_TRUE(ri.hasFinished());
-    EXPECT_EQ(ri.numberOfMatches(), referenceMatches(pattern.G, target.G, Semantics::MONOMORPHISM,
-                                                     {}, {}, pattern.edgeLabels, target.edgeLabels)
-                                        .size());
+    EXPECT_EQ(ri.numberOfMatches(), labelled);
+
+    ParallelRI parallelRi(pattern.G, target.G, RI::Variant::RI, Semantics::MONOMORPHISM);
+    parallelRi.setEdgeLabels(pattern.edgeLabels, target.edgeLabels);
+    EXPECT_NO_THROW(parallelRi.run());
+    EXPECT_TRUE(parallelRi.hasFinished());
+    EXPECT_EQ(parallelRi.numberOfMatches(), labelled);
 }
 
 TEST_F(SubgraphIsomorphismGTest, testParallelEdgesWithDisagreeingLabelsAreRefused) {
@@ -447,10 +456,9 @@ TEST_F(SubgraphIsomorphismGTest, testParallelEdgesWithDisagreeingLabelsAreRefuse
     // only what no snapshot can represent. The two parallel 0-1 edges disagree, so collapsing them
     // leaves one arc that cannot carry both labels.
     //
-    // The distinction this test rests on is which exception comes out. The refusal is a
-    // std::runtime_error raised before the search starts; ParallelRI's worker pool is unwritten
-    // and answers std::logic_error once the search is reached. So demanding a runtime_error is
-    // what proves the refusal fired rather than the search simply not existing yet.
+    // Both algorithms refuse before any search begins, and ParallelRI refuses before any thread
+    // is started, so there is never a worker left to unwind. The equally-labelled case below is
+    // what proves the refusal is this narrow one and not a blanket rejection of edge labels.
     const IsomorphismTest::LabelledGraph pattern =
         IsomorphismTest::labelledGraphOf(3, {{0, 1, 1}, {1, 2, 2}});
     const IsomorphismTest::LabelledGraph target =
