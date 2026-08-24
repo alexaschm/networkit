@@ -45,19 +45,19 @@ public:
     /**
      * @param pattern Snapshot of the pattern, built with the adjacency matrix.
      * @param target Snapshot of the target, built without it.
-     * @param patternLabels Empty when the search is unlabelled; then there is one class.
-     * @param targetLabels Empty when the search is unlabelled.
+     * @param patternNodeLabels Empty when the search is unlabelled; then there is one class.
+     * @param targetNodeLabels Empty when the search is unlabelled.
      * @param semantics Whether matches must be induced.
      * @param handler Polled so a long search can be stopped with CTRL+C.
      * @param report Where complete mappings are reported.
      */
-    VF3Impl(const Graph &pattern, const Graph &target, const std::vector<index> &patternLabels,
-            const std::vector<index> &targetLabels, SubgraphIsomorphism::Semantics semantics,
+    VF3Impl(const Graph &pattern, const Graph &target, const std::vector<index> &patternNodeLabels,
+            const std::vector<index> &targetNodeLabels, SubgraphIsomorphism::Semantics semantics,
             Aux::SignalHandler &handler, MatchReporter report)
         : patternGraph(pattern, /* buildMatrix = */ true),
-          targetGraph(target, /* buildMatrix = */ false), patternLabels(&patternLabels),
-          targetLabels(&targetLabels), labelled(!patternLabels.empty()), semantics(semantics),
-          handler(&handler), report(std::move(report)), numberOfClasses(0) {}
+          targetGraph(target, /* buildMatrix = */ false), patternNodeLabels(&patternNodeLabels),
+          targetNodeLabels(&targetNodeLabels), nodeLabelled(!patternNodeLabels.empty()),
+          semantics(semantics), handler(&handler), report(std::move(report)), numberOfClasses(0) {}
 
     /**
      * Search for every match and report each one.
@@ -72,9 +72,9 @@ public:
      */
     void run() {
         // TODO: remove once implemented.
-        tlx::unused(patternGraph, targetGraph, patternLabels, targetLabels, labelled, semantics,
-                    handler, report, patternClass, targetClass, targetClassSize, numberOfClasses,
-                    order, orderParent, feasibilitySets, core1, core2, mapping);
+        tlx::unused(patternGraph, targetGraph, patternNodeLabels, targetNodeLabels, nodeLabelled,
+                    semantics, handler, report, patternClass, targetClass, targetClassSize,
+                    numberOfClasses, order, orderParent, feasibilitySets, core1, core2, mapping);
         throw std::logic_error("VF3Impl::run() is not implemented yet");
     }
 
@@ -248,9 +248,9 @@ private:
     SearchGraph patternGraph;
     SearchGraph targetGraph;
 
-    const std::vector<index> *patternLabels;
-    const std::vector<index> *targetLabels;
-    bool labelled;
+    const std::vector<index> *patternNodeLabels;
+    const std::vector<index> *targetNodeLabels;
+    bool nodeLabelled;
 
     SubgraphIsomorphism::Semantics semantics;
 
@@ -299,7 +299,7 @@ void VF3::run() {
 
     Aux::SignalHandler handler;
     prepareRun();
-    VF3Impl(*pattern, *target, patternLabels, targetLabels, semantics, handler,
+    VF3Impl(*pattern, *target, patternNodeLabels, targetNodeLabels, semantics, handler,
             [this](const std::vector<node> &match) { return reportMatch(match); })
         .run();
     finishRun();

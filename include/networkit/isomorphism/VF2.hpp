@@ -52,7 +52,7 @@ namespace NetworKit {
  * ## What it supports
  *
  * Both semantics, directed and undirected graphs, and optional node labels via
- * @ref setLabels() - with labels, a pair is only feasible if the two labels agree.
+ * @ref setNodeLabels() - with labels, a pair is only feasible if the two labels agree.
  *
  * **Edge** labels are refused, not honoured: @ref run() throws if @ref setEdgeLabels() was used,
  * because VF2's feasibility rules compare node labels only and would otherwise report matches that

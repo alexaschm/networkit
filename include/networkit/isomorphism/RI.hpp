@@ -72,8 +72,8 @@ namespace NetworKit {
  *
  * ## What it supports
  *
- * Both semantics, directed and undirected graphs, optional node labels via @ref setLabels(), and
- * optional edge labels via @ref setEdgeLabels(). Edge labels are cheap here: the parent edge's
+ * Both semantics, directed and undirected graphs, optional node labels via @ref setNodeLabels(),
+ * and optional edge labels via @ref setEdgeLabels(). Edge labels are cheap here: the parent edge's
  * label filters the candidate slice as it is walked, which costs one comparison per candidate.
  *
  * The one input it refuses is **parallel edges whose labels disagree**. The search works off a

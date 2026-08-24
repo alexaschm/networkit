@@ -61,24 +61,24 @@ void SubgraphIsomorphism::validateInput() const {
         throw std::runtime_error("Subgraph isomorphism is undefined for patterns with self-loops");
 }
 
-void SubgraphIsomorphism::setLabels(const std::vector<index> &patternLabels,
-                                    const std::vector<index> &targetLabels) {
-    if (patternLabels.empty() && targetLabels.empty()) {
-        this->patternLabels.clear();
-        this->targetLabels.clear();
+void SubgraphIsomorphism::setNodeLabels(const std::vector<index> &patternNodeLabels,
+                                        const std::vector<index> &targetNodeLabels) {
+    if (patternNodeLabels.empty() && targetNodeLabels.empty()) {
+        this->patternNodeLabels.clear();
+        this->targetNodeLabels.clear();
         return;
     }
 
-    if (patternLabels.size() < pattern->upperNodeIdBound())
+    if (patternNodeLabels.size() < pattern->upperNodeIdBound())
         throw std::runtime_error("Pattern label vector is shorter than the pattern's "
                                  "upperNodeIdBound()");
 
-    if (targetLabels.size() < target->upperNodeIdBound())
+    if (targetNodeLabels.size() < target->upperNodeIdBound())
         throw std::runtime_error("Target label vector is shorter than the target's "
                                  "upperNodeIdBound()");
 
-    this->patternLabels = patternLabels;
-    this->targetLabels = targetLabels;
+    this->patternNodeLabels = patternNodeLabels;
+    this->targetNodeLabels = targetNodeLabels;
 }
 
 void SubgraphIsomorphism::setEdgeLabels(const std::vector<index> &patternEdgeLabels,

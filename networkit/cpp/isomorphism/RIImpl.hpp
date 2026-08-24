@@ -131,14 +131,15 @@ public:
      * @param pattern Snapshot of the pattern.
      * @param target Unused. Kept because both drivers pass it and because a target-aware variant
      *        would plug in here; RI's ordering is target-independent, which is the paper's claim.
-     * @param patternLabels Unused, as above.
-     * @param targetLabels Unused, as above.
+     * @param patternNodeLabels Unused, as above.
+     * @param targetNodeLabels Unused, as above.
      * @param variant Unused: RI-Ds orders exactly as plain RI does. There is no domain-size
      *        tie-break, because that is what the paper's measurements advise against.
      */
     static Ordering computeOrdering(const SearchGraph &pattern, const SearchGraph &target,
-                                    const std::vector<index> &patternLabels,
-                                    const std::vector<index> &targetLabels, RI::Variant variant);
+                                    const std::vector<index> &patternNodeLabels,
+                                    const std::vector<index> &targetNodeLabels,
+                                    RI::Variant variant);
 
     /**
      * Inputs no match can survive, judged before the search starts.
@@ -155,8 +156,8 @@ public:
     /**
      * @param pattern Snapshot of the pattern, built with the adjacency matrix.
      * @param target Snapshot of the target, built without it.
-     * @param patternLabels Empty when the search is unlabelled.
-     * @param targetLabels Empty when the search is unlabelled.
+     * @param patternNodeLabels Empty when the search is unlabelled.
+     * @param targetNodeLabels Empty when the search is unlabelled.
      * @param ordering Shared, read-only; must outlive this object.
      * @param semantics Whether matches must be induced.
      * @param variant Plain RI or RI-DS.
@@ -166,7 +167,7 @@ public:
      * @param report Where complete mappings go. One per worker; never shared between threads.
      */
     RIImpl(const SearchGraph &pattern, const SearchGraph &target,
-           const std::vector<index> &patternLabels, const std::vector<index> &targetLabels,
+           const std::vector<index> &patternNodeLabels, const std::vector<index> &targetNodeLabels,
            const Ordering &ordering, SubgraphIsomorphism::Semantics semantics, RI::Variant variant,
            Aux::SignalHandler &handler, MatchReporter report);
 
@@ -320,9 +321,9 @@ private:
     const SearchGraph *patternGraph;
     const SearchGraph *targetGraph;
 
-    const std::vector<index> *patternLabels;
-    const std::vector<index> *targetLabels;
-    bool labelled;
+    const std::vector<index> *patternNodeLabels;
+    const std::vector<index> *targetNodeLabels;
+    bool nodeLabelled;
 
     /// Shared with every other worker. Never modified after construction.
     const Ordering *ordering;

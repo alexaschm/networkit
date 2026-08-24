@@ -17,18 +17,18 @@ namespace {
 /**
  * Whether pattern node @a pu may sit on target node @a tv as far as node labels are concerned.
  *
- * Deliberately the same three lines as IsomorphismTest::labelsCompatible(), which is what the test
- * corpus judges every algorithm against. @ref RIImpl::ruleLabels() is a one-line delegate to this,
- * and @ref couldMap() calls it too, so the search and the RI-Ds domains cannot disagree about what
- * a label permits.
+ * Deliberately the same three lines as IsomorphismTest::nodeLabelsCompatible(), which is what the
+ * test corpus judges every algorithm against. @ref RIImpl::ruleLabels() is a one-line delegate to
+ * this, and @ref couldMap() calls it too, so the search and the RI-Ds domains cannot disagree about
+ * what a label permits.
  */
-bool labelsCompatible(const std::vector<index> &patternLabels,
-                      const std::vector<index> &targetLabels, node pu, node tv) {
-    if (patternLabels.empty())
+bool nodeLabelsCompatible(const std::vector<index> &patternNodeLabels,
+                          const std::vector<index> &targetNodeLabels, node pu, node tv) {
+    if (patternNodeLabels.empty())
         return true;
 
-    const index patternLabel = patternLabels[pu];
-    const index targetLabel = targetLabels[tv];
+    const index patternLabel = patternNodeLabels[pu];
+    const index targetLabel = targetNodeLabels[tv];
     return patternLabel == none || targetLabel == none || patternLabel == targetLabel;
 }
 
@@ -87,8 +87,8 @@ void forEachDistinctNeighbor(const SearchGraph &g, node u, Callback fn) {
  * candidate list with it would throw real matches away.
  */
 bool couldMap(const SearchGraph &pattern, const SearchGraph &target,
-              const std::vector<index> &patternLabels, const std::vector<index> &targetLabels,
-              node pu, node tv) {
+              const std::vector<index> &patternNodeLabels,
+              const std::vector<index> &targetNodeLabels, node pu, node tv) {
     if (!target.hasNode(tv))
         return false;
 
@@ -98,7 +98,7 @@ bool couldMap(const SearchGraph &pattern, const SearchGraph &target,
     if (pattern.isDirected() && target.inDegree(tv) < pattern.inDegree(pu))
         return false;
 
-    return labelsCompatible(patternLabels, targetLabels, pu, tv);
+    return nodeLabelsCompatible(patternNodeLabels, targetNodeLabels, pu, tv);
 }
 
 /**
@@ -166,14 +166,14 @@ constexpr double MinSweepYieldForSliceIntersection = 0.8;
 } // namespace
 
 RIImpl::Ordering RIImpl::computeOrdering(const SearchGraph &pattern, const SearchGraph &target,
-                                         const std::vector<index> &patternLabels,
-                                         const std::vector<index> &targetLabels,
+                                         const std::vector<index> &patternNodeLabels,
+                                         const std::vector<index> &targetNodeLabels,
                                          RI::Variant variant) {
     // RI's ordering looks at nothing but the pattern - that target-independence is the paper's
     // central claim, and it is why ParallelRI can compute the order once and share it. The
     // parameters stay because both drivers pass them and because they are where a future
     // target-aware variant would plug in.
-    tlx::unused(target, patternLabels, targetLabels, variant);
+    tlx::unused(target, patternNodeLabels, targetNodeLabels, variant);
 
     // ## The score, and the paper's errata
     //
@@ -315,12 +315,14 @@ bool RIImpl::patternCannotFit(const SearchGraph &pattern, const SearchGraph &tar
 }
 
 RIImpl::RIImpl(const SearchGraph &pattern, const SearchGraph &target,
-               const std::vector<index> &patternLabels, const std::vector<index> &targetLabels,
-               const Ordering &ordering, SubgraphIsomorphism::Semantics semantics,
-               RI::Variant variant, Aux::SignalHandler &handler, MatchReporter report)
-    : patternGraph(&pattern), targetGraph(&target), patternLabels(&patternLabels),
-      targetLabels(&targetLabels), labelled(!patternLabels.empty()), ordering(&ordering),
-      semantics(semantics), variant(variant), handler(&handler), report(std::move(report)) {
+               const std::vector<index> &patternNodeLabels,
+               const std::vector<index> &targetNodeLabels, const Ordering &ordering,
+               SubgraphIsomorphism::Semantics semantics, RI::Variant variant,
+               Aux::SignalHandler &handler, MatchReporter report)
+    : patternGraph(&pattern), targetGraph(&target), patternNodeLabels(&patternNodeLabels),
+      targetNodeLabels(&targetNodeLabels), nodeLabelled(!patternNodeLabels.empty()),
+      ordering(&ordering), semantics(semantics), variant(variant), handler(&handler),
+      report(std::move(report)) {
 
     // Both of these belong here rather than in run(), because ParallelRI builds one RIImpl per
     // worker and those workers only ever call expand(). See the class documentation.
@@ -586,7 +588,7 @@ bool RIImpl::ruleNonEdgesToPrefix(const State &state, node tv) const {
 }
 
 bool RIImpl::ruleLabels(node pu, node tv) const {
-    return labelsCompatible(*patternLabels, *targetLabels, pu, tv);
+    return nodeLabelsCompatible(*patternNodeLabels, *targetNodeLabels, pu, tv);
 }
 
 void RIImpl::initializeDomains() {
@@ -607,7 +609,8 @@ void RIImpl::initializeDomains() {
         const node pu = ordering->order[i];
         std::vector<node> &domain = domains[i];
         for (node tv = 0; tv < targetGraph->upperNodeIdBound(); ++tv)
-            if (couldMap(*patternGraph, *targetGraph, *patternLabels, *targetLabels, pu, tv))
+            if (couldMap(*patternGraph, *targetGraph, *patternNodeLabels, *targetNodeLabels, pu,
+                         tv))
                 domain.push_back(tv);
     }
 

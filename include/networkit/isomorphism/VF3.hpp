@@ -51,7 +51,7 @@ namespace NetworKit {
  * ## What it supports
  *
  * Both semantics, directed and undirected graphs, and optional node labels via
- * @ref setLabels().
+ * @ref setNodeLabels().
  *
  * The search polls `Aux::SignalHandler` regularly, so a long enumeration can be stopped with
  * CTRL+C.

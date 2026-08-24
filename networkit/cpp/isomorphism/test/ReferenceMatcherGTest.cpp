@@ -159,17 +159,19 @@ TEST_F(ReferenceMatcherGTest, testLabelWildcards) {
     const Graph target = graphOf(3, {{0, 1}, {1, 2}});
 
     // Labels 5, 6, 5 on the target; the pattern asks for a 5 next to a 6.
-    const std::vector<index> targetLabels = {5, 6, 5};
+    const std::vector<index> targetNodeLabels = {5, 6, 5};
 
-    EXPECT_EQ(referenceMatches(edge, target, Semantics::MONOMORPHISM, {5, 6}, targetLabels).size(),
-              2u); // 0->0,1->1 and 0->2,1->1
+    EXPECT_EQ(
+        referenceMatches(edge, target, Semantics::MONOMORPHISM, {5, 6}, targetNodeLabels).size(),
+        2u); // 0->0,1->1 and 0->2,1->1
 
-    EXPECT_EQ(referenceMatches(edge, target, Semantics::MONOMORPHISM, {6, 6}, targetLabels).size(),
-              0u); // no two adjacent 6s
+    EXPECT_EQ(
+        referenceMatches(edge, target, Semantics::MONOMORPHISM, {6, 6}, targetNodeLabels).size(),
+        0u); // no two adjacent 6s
 
     // `none` on the pattern side matches any target label...
     EXPECT_EQ(
-        referenceMatches(edge, target, Semantics::MONOMORPHISM, {none, 6}, targetLabels).size(),
+        referenceMatches(edge, target, Semantics::MONOMORPHISM, {none, 6}, targetNodeLabels).size(),
         2u);
 
     // ...and on the target side it is the target node that accepts any pattern label.
@@ -225,14 +227,14 @@ TEST_F(ReferenceMatcherGTest, testCorpusInvariants) {
     for (const IsomorphismTest::Case &testCase : standardCases()) {
         std::vector<Match> matches =
             referenceMatches(testCase.pattern, testCase.target, testCase.semantics,
-                             testCase.patternLabels, testCase.targetLabels);
+                             testCase.patternNodeLabels, testCase.targetNodeLabels);
 
         for (const Match &match : matches) {
             EXPECT_EQ(match.size(), testCase.pattern.upperNodeIdBound())
                 << "case: " << testCase.name << " - matches are indexed by pattern node";
 
             EXPECT_TRUE(isValidMatch(testCase.pattern, testCase.target, testCase.semantics,
-                                     testCase.patternLabels, testCase.targetLabels, match))
+                                     testCase.patternNodeLabels, testCase.targetNodeLabels, match))
                 << "case: " << testCase.name;
 
             // `none` exactly at the pattern's gaps, a real target node everywhere else.
@@ -261,10 +263,10 @@ TEST_F(ReferenceMatcherGTest, testInducedIsSubsetOfMonomorphism) {
     for (const IsomorphismTest::Case &testCase : standardCases()) {
         std::vector<Match> induced =
             referenceMatches(testCase.pattern, testCase.target, Semantics::INDUCED,
-                             testCase.patternLabels, testCase.targetLabels);
+                             testCase.patternNodeLabels, testCase.targetNodeLabels);
         std::vector<Match> mono =
             referenceMatches(testCase.pattern, testCase.target, Semantics::MONOMORPHISM,
-                             testCase.patternLabels, testCase.targetLabels);
+                             testCase.patternNodeLabels, testCase.targetNodeLabels);
 
         IsomorphismTest::sortMatches(induced);
         IsomorphismTest::sortMatches(mono);

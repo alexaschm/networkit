@@ -52,13 +52,13 @@ using Match = std::vector<node>;
 
 /// Whether pattern node @a pu may sit on target node @a tv as far as labels are concerned.
 /// Unlabelled searches accept everything; `none` is a wildcard on either side.
-inline bool labelsCompatible(const std::vector<index> &patternLabels,
-                             const std::vector<index> &targetLabels, node pu, node tv) {
-    if (patternLabels.empty())
+inline bool nodeLabelsCompatible(const std::vector<index> &patternNodeLabels,
+                                 const std::vector<index> &targetNodeLabels, node pu, node tv) {
+    if (patternNodeLabels.empty())
         return true;
 
-    const index patternLabel = patternLabels[pu];
-    const index targetLabel = targetLabels[tv];
+    const index patternLabel = patternNodeLabels[pu];
+    const index targetLabel = targetNodeLabels[tv];
     return patternLabel == none || targetLabel == none || patternLabel == targetLabel;
 }
 
@@ -115,8 +115,8 @@ inline bool edgeLabelsCompatible(const std::vector<index> &patternEdgeLabels,
 /// The edge-label vectors are last and default to empty so that every call site that predates them
 /// keeps reading as it did. They are indexed by edge id, not node id.
 inline bool isValidMatch(const Graph &pattern, const Graph &target, Semantics semantics,
-                         const std::vector<index> &patternLabels,
-                         const std::vector<index> &targetLabels, const Match &match,
+                         const std::vector<index> &patternNodeLabels,
+                         const std::vector<index> &targetNodeLabels, const Match &match,
                          const std::vector<index> &patternEdgeLabels = {},
                          const std::vector<index> &targetEdgeLabels = {}) {
     const count pz = pattern.upperNodeIdBound();
@@ -145,7 +145,7 @@ inline bool isValidMatch(const Graph &pattern, const Graph &target, Semantics se
         if (match[pu] == none || match[pu] >= target.upperNodeIdBound()
             || !target.hasNode(match[pu]))
             return false;
-        if (!labelsCompatible(patternLabels, targetLabels, pu, match[pu]))
+        if (!nodeLabelsCompatible(patternNodeLabels, targetNodeLabels, pu, match[pu]))
             return false;
     }
 
@@ -198,8 +198,8 @@ inline bool isValidMatch(const Graph &pattern, const Graph &target, Semantics se
 /// four algorithms have to agree on.
 inline std::vector<Match> referenceMatches(const Graph &pattern, const Graph &target,
                                            Semantics semantics,
-                                           const std::vector<index> &patternLabels = {},
-                                           const std::vector<index> &targetLabels = {},
+                                           const std::vector<index> &patternNodeLabels = {},
+                                           const std::vector<index> &targetNodeLabels = {},
                                            const std::vector<index> &patternEdgeLabels = {},
                                            const std::vector<index> &targetEdgeLabels = {}) {
     std::vector<node> patternNodes;
@@ -214,8 +214,8 @@ inline std::vector<Match> referenceMatches(const Graph &pattern, const Graph &ta
 
     std::function<void(index)> assign = [&](index next) {
         if (next == patternNodes.size()) {
-            if (isValidMatch(pattern, target, semantics, patternLabels, targetLabels, current,
-                             patternEdgeLabels, targetEdgeLabels))
+            if (isValidMatch(pattern, target, semantics, patternNodeLabels, targetNodeLabels,
+                             current, patternEdgeLabels, targetEdgeLabels))
                 matches.push_back(current);
             return;
         }
@@ -254,8 +254,8 @@ struct Case {
     Graph pattern;
     Graph target;
     Semantics semantics;
-    std::vector<index> patternLabels;
-    std::vector<index> targetLabels;
+    std::vector<index> patternNodeLabels;
+    std::vector<index> targetNodeLabels;
     std::vector<index> patternEdgeLabels;
     std::vector<index> targetEdgeLabels;
 };
@@ -565,7 +565,7 @@ public:
         // 2. Search, reporting each complete mapping and stopping the moment reportMatch()
         //    says so.
         for (const Match &match :
-             referenceMatches(*pattern, *target, semantics, patternLabels, targetLabels,
+             referenceMatches(*pattern, *target, semantics, patternNodeLabels, targetNodeLabels,
                               patternEdgeLabels, targetEdgeLabels)) {
             handler.assureRunning();
             if (!reportMatch(match))
@@ -590,8 +590,8 @@ public:
 
 /// Configure an algorithm with whatever labels the case carries.
 inline void applyLabels(SubgraphIsomorphism &algo, const Case &testCase) {
-    if (!testCase.patternLabels.empty())
-        algo.setLabels(testCase.patternLabels, testCase.targetLabels);
+    if (!testCase.patternNodeLabels.empty())
+        algo.setNodeLabels(testCase.patternNodeLabels, testCase.targetNodeLabels);
     if (!testCase.patternEdgeLabels.empty())
         algo.setEdgeLabels(testCase.patternEdgeLabels, testCase.targetEdgeLabels);
 }
@@ -623,8 +623,8 @@ template <typename Construct>
 void expectMatchesReference(Construct construct) {
     for (const Case &testCase : standardCases()) {
         std::vector<Match> expected = referenceMatches(
-            testCase.pattern, testCase.target, testCase.semantics, testCase.patternLabels,
-            testCase.targetLabels, testCase.patternEdgeLabels, testCase.targetEdgeLabels);
+            testCase.pattern, testCase.target, testCase.semantics, testCase.patternNodeLabels,
+            testCase.targetNodeLabels, testCase.patternEdgeLabels, testCase.targetEdgeLabels);
         sortMatches(expected);
 
         std::unique_ptr<SubgraphIsomorphism> algo =
@@ -644,7 +644,7 @@ void expectMatchesReference(Construct construct) {
         // own terms - full width, `none` at pattern gaps, injective, semantics respected.
         for (const Match &match : actual) {
             EXPECT_TRUE(isValidMatch(testCase.pattern, testCase.target, testCase.semantics,
-                                     testCase.patternLabels, testCase.targetLabels, match,
+                                     testCase.patternNodeLabels, testCase.targetNodeLabels, match,
                                      testCase.patternEdgeLabels, testCase.targetEdgeLabels))
                 << "case: " << testCase.name << " produced a malformed match";
         }
@@ -685,8 +685,8 @@ template <typename Construct>
 void expectCallbackFormsAgree(Construct construct) {
     for (const Case &testCase : standardCases()) {
         std::vector<Match> expected = referenceMatches(
-            testCase.pattern, testCase.target, testCase.semantics, testCase.patternLabels,
-            testCase.targetLabels, testCase.patternEdgeLabels, testCase.targetEdgeLabels);
+            testCase.pattern, testCase.target, testCase.semantics, testCase.patternNodeLabels,
+            testCase.targetNodeLabels, testCase.patternEdgeLabels, testCase.targetEdgeLabels);
         sortMatches(expected);
 
         const auto build = [&]() {

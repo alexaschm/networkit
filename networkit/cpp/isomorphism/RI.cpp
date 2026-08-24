@@ -35,11 +35,11 @@ void RI::run() {
 
     // Deciding the matching order is the expensive part of RI, and it depends only on the two
     // graphs. ParallelRI computes exactly the same thing once and shares it across its workers.
-    const RIImpl::Ordering ordering =
-        RIImpl::computeOrdering(patternGraph, targetGraph, patternLabels, targetLabels, variant);
+    const RIImpl::Ordering ordering = RIImpl::computeOrdering(
+        patternGraph, targetGraph, patternNodeLabels, targetNodeLabels, variant);
 
-    RIImpl(patternGraph, targetGraph, patternLabels, targetLabels, ordering, semantics, variant,
-           handler, [this](const std::vector<node> &match) { return reportMatch(match); })
+    RIImpl(patternGraph, targetGraph, patternNodeLabels, targetNodeLabels, ordering, semantics,
+           variant, handler, [this](const std::vector<node> &match) { return reportMatch(match); })
         .run();
 
     // RIImpl may only poll isRunning(), so an interrupted search just returns. Without this, that

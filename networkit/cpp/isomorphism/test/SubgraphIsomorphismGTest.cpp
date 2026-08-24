@@ -78,7 +78,7 @@ public:
 
     void run() override {
         const std::vector<Match> all = IsomorphismTest::referenceMatches(
-            *pattern, *target, semantics, patternLabels, targetLabels);
+            *pattern, *target, semantics, patternNodeLabels, targetNodeLabels);
 
         Aux::SignalHandler handler;
         prepareRun();

@@ -72,8 +72,8 @@ public:
     /**
      * @param patternGraph Shared read-only snapshot of the pattern.
      * @param targetGraph Shared read-only snapshot of the target.
-     * @param patternLabels Empty when the search is unlabelled.
-     * @param targetLabels Empty when the search is unlabelled.
+     * @param patternNodeLabels Empty when the search is unlabelled.
+     * @param targetNodeLabels Empty when the search is unlabelled.
      * @param ordering Shared read-only matching order, computed once by the caller.
      * @param semantics Whether matches must be induced.
      * @param variant Plain RI or RI-DS.
@@ -86,14 +86,16 @@ public:
      *        expect from SubgraphIsomorphism::numberOfWorkers().
      */
     ParallelRIImpl(const SearchGraph &patternGraph, const SearchGraph &targetGraph,
-                   const std::vector<index> &patternLabels, const std::vector<index> &targetLabels,
-                   const RIImpl::Ordering &ordering, SubgraphIsomorphism::Semantics semantics,
-                   RI::Variant variant, Aux::SignalHandler &handler, Deliver deliver,
-                   bool storeMatches, count maxMatches, count numWorkers)
-        : patternGraph(&patternGraph), targetGraph(&targetGraph), patternLabels(&patternLabels),
-          targetLabels(&targetLabels), ordering(&ordering), semantics(semantics), variant(variant),
-          handler(&handler), deliver(std::move(deliver)), storeMatches(storeMatches),
-          maxMatches(maxMatches), numWorkers(numWorkers == 0 ? 1 : numWorkers),
+                   const std::vector<index> &patternNodeLabels,
+                   const std::vector<index> &targetNodeLabels, const RIImpl::Ordering &ordering,
+                   SubgraphIsomorphism::Semantics semantics, RI::Variant variant,
+                   Aux::SignalHandler &handler, Deliver deliver, bool storeMatches,
+                   count maxMatches, count numWorkers)
+        : patternGraph(&patternGraph), targetGraph(&targetGraph),
+          patternNodeLabels(&patternNodeLabels), targetNodeLabels(&targetNodeLabels),
+          ordering(&ordering), semantics(semantics), variant(variant), handler(&handler),
+          deliver(std::move(deliver)), storeMatches(storeMatches), maxMatches(maxMatches),
+          numWorkers(numWorkers == 0 ? 1 : numWorkers),
           // Worker holds an atomic, so it is neither copyable nor movable and vector::resize()
           // would not compile. vector(size_type) only needs default construction, hence here.
           workers(this->numWorkers), stopped(false), tokenHolder(0), published(0),
@@ -128,8 +130,8 @@ public:
      */
     void run() {
         // TODO: remove once implemented.
-        tlx::unused(patternGraph, targetGraph, patternLabels, targetLabels, ordering, semantics,
-                    variant, handler, numWorkers, workers, stopped, tokenHolder);
+        tlx::unused(patternGraph, targetGraph, patternNodeLabels, targetNodeLabels, ordering,
+                    semantics, variant, handler, numWorkers, workers, stopped, tokenHolder);
         throw std::logic_error("ParallelRIImpl::run() is not implemented yet");
     }
 
@@ -351,8 +353,8 @@ private:
     const SearchGraph *patternGraph;
     const SearchGraph *targetGraph;
 
-    const std::vector<index> *patternLabels;
-    const std::vector<index> *targetLabels;
+    const std::vector<index> *patternNodeLabels;
+    const std::vector<index> *targetNodeLabels;
 
     /// Computed once by the caller and read by every worker. Never modified here.
     const RIImpl::Ordering *ordering;
@@ -415,14 +417,14 @@ void ParallelRI::run() {
     if (patternGraph.collapsedLabelledEdges() || targetGraph.collapsedLabelledEdges())
         throw std::runtime_error("ParallelRI does not support parallel edges whose edge labels "
                                  "disagree - see SubgraphIsomorphism::setEdgeLabels()");
-    const RIImpl::Ordering ordering =
-        RIImpl::computeOrdering(patternGraph, targetGraph, patternLabels, targetLabels, variant);
+    const RIImpl::Ordering ordering = RIImpl::computeOrdering(
+        patternGraph, targetGraph, patternNodeLabels, targetNodeLabels, variant);
 
     // The lambda is what gets the workers at the user's callback: they are not subclasses and so
     // cannot reach the protected invokeCallback() themselves, but run() can.
     ParallelRIImpl impl(
-        patternGraph, targetGraph, patternLabels, targetLabels, ordering, semantics, variant,
-        handler,
+        patternGraph, targetGraph, patternNodeLabels, targetNodeLabels, ordering, semantics,
+        variant, handler,
         [this](index tid, const std::vector<node> &match) { return invokeCallback(tid, match); },
         storesMatches(), maxMatches, numWorkers);
     impl.run();

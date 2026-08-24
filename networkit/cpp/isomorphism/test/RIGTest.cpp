@@ -61,7 +61,7 @@ index positionOf(const RIImpl::Ordering &ordering, node pu) {
 }
 
 /// A label per node id, with `none` mixed in so both sides carry wildcards.
-std::vector<index> randomLabels(count upperNodeIdBound) {
+std::vector<index> randomNodeLabels(count upperNodeIdBound) {
     std::vector<index> labels;
     labels.reserve(upperNodeIdBound);
     for (count i = 0; i < upperNodeIdBound; ++i) {
@@ -134,8 +134,8 @@ TEST_P(RIGTest, testOrderingInvariants) {
     for (const Case &testCase : IsomorphismTest::standardCases()) {
         const Snapshot snapshot(testCase);
         const RIImpl::Ordering ordering =
-            RIImpl::computeOrdering(snapshot.pattern, snapshot.target, testCase.patternLabels,
-                                    testCase.targetLabels, GetParam());
+            RIImpl::computeOrdering(snapshot.pattern, snapshot.target, testCase.patternNodeLabels,
+                                    testCase.targetNodeLabels, GetParam());
 
         ASSERT_EQ(ordering.order.size(), snapshot.pattern.numberOfNodes())
             << "case: " << testCase.name;
@@ -297,13 +297,13 @@ TEST_P(RIGTest, testSelectiveDomainsDoNotChangeTheMatchSet) {
     // The single edge across the classes.
     target.addEdge(0, perClass);
 
-    std::vector<index> targetLabels(2 * perClass);
+    std::vector<index> targetNodeLabels(2 * perClass);
     for (node v = 0; v < 2 * perClass; ++v)
-        targetLabels[v] = v < perClass ? 0 : 1;
+        targetNodeLabels[v] = v < perClass ? 0 : 1;
 
     // Pattern node 1 carries class 0, so the order puts it second - at the parented position.
     const Graph pattern = IsomorphismTest::graphOf(2, {{0, 1}});
-    const std::vector<index> patternLabels{1, 0};
+    const std::vector<index> patternNodeLabels{1, 0};
 
     // The precondition the whole case rests on: of the class-0 nodes that could host the pattern's
     // class-0 node on degree alone, at most a fifth survive the sweep's "must reach the other
@@ -315,7 +315,7 @@ TEST_P(RIGTest, testSelectiveDomainsDoNotChangeTheMatchSet) {
             continue;
         ++couldHost;
         target.forNeighborsOf(v, [&](node w) {
-            if (targetLabels[w] == 1 && target.degree(w) != 0)
+            if (targetNodeLabels[w] == 1 && target.degree(w) != 0)
                 ++survivesSweep;
         });
     }
@@ -324,12 +324,12 @@ TEST_P(RIGTest, testSelectiveDomainsDoNotChangeTheMatchSet) {
                                                "RI-Ds intersect, so this case tests nothing";
 
     std::vector<Match> expected = IsomorphismTest::referenceMatches(
-        pattern, target, Semantics::MONOMORPHISM, patternLabels, targetLabels);
+        pattern, target, Semantics::MONOMORPHISM, patternNodeLabels, targetNodeLabels);
     IsomorphismTest::sortMatches(expected);
     ASSERT_FALSE(expected.empty()) << "a case with no matches would not exercise the search";
 
     RI algo(pattern, target, GetParam(), Semantics::MONOMORPHISM, 0);
-    algo.setLabels(patternLabels, targetLabels);
+    algo.setNodeLabels(patternNodeLabels, targetNodeLabels);
     algo.run();
 
     std::vector<Match> actual = algo.getMatches();
@@ -359,12 +359,12 @@ TEST_P(RIGTest, testExpandAgreesWithRun) {
 
         Aux::SignalHandler handler;
         const RIImpl::Ordering ordering =
-            RIImpl::computeOrdering(snapshot.pattern, snapshot.target, testCase.patternLabels,
-                                    testCase.targetLabels, variant);
+            RIImpl::computeOrdering(snapshot.pattern, snapshot.target, testCase.patternNodeLabels,
+                                    testCase.targetNodeLabels, variant);
 
         std::vector<Match> viaRun;
-        RIImpl(snapshot.pattern, snapshot.target, testCase.patternLabels, testCase.targetLabels,
-               ordering, testCase.semantics, variant, handler,
+        RIImpl(snapshot.pattern, snapshot.target, testCase.patternNodeLabels,
+               testCase.targetNodeLabels, ordering, testCase.semantics, variant, handler,
                [&viaRun](const std::vector<node> &match) {
                    viaRun.push_back(match);
                    return true;
@@ -372,8 +372,8 @@ TEST_P(RIGTest, testExpandAgreesWithRun) {
             .run();
 
         std::vector<Match> viaExpand;
-        RIImpl expander(snapshot.pattern, snapshot.target, testCase.patternLabels,
-                        testCase.targetLabels, ordering, testCase.semantics, variant, handler,
+        RIImpl expander(snapshot.pattern, snapshot.target, testCase.patternNodeLabels,
+                        testCase.targetNodeLabels, ordering, testCase.semantics, variant, handler,
                         [&viaExpand](const std::vector<node> &match) {
                             viaExpand.push_back(match);
                             return true;
@@ -416,26 +416,26 @@ TEST_P(RIGTest, testMatchesReferenceOnRandomGraphs) {
 
     for (const bool directed : {false, true}) {
         for (const Semantics semantics : {Semantics::MONOMORPHISM, Semantics::INDUCED}) {
-            for (const bool labelled : {false, true}) {
+            for (const bool nodeLabelled : {false, true}) {
                 for (int trial = 0; trial < trials; ++trial) {
                     const Graph pattern =
                         ErdosRenyiGenerator(patternNodes, 0.5, directed).generate();
                     const Graph target = ErdosRenyiGenerator(targetNodes, 0.4, directed).generate();
 
-                    std::vector<index> patternLabels;
-                    std::vector<index> targetLabels;
-                    if (labelled) {
-                        patternLabels = randomLabels(pattern.upperNodeIdBound());
-                        targetLabels = randomLabels(target.upperNodeIdBound());
+                    std::vector<index> patternNodeLabels;
+                    std::vector<index> targetNodeLabels;
+                    if (nodeLabelled) {
+                        patternNodeLabels = randomNodeLabels(pattern.upperNodeIdBound());
+                        targetNodeLabels = randomNodeLabels(target.upperNodeIdBound());
                     }
 
                     std::vector<Match> expected = IsomorphismTest::referenceMatches(
-                        pattern, target, semantics, patternLabels, targetLabels);
+                        pattern, target, semantics, patternNodeLabels, targetNodeLabels);
                     IsomorphismTest::sortMatches(expected);
 
                     RI algo(pattern, target, variant, semantics, 0);
-                    if (labelled)
-                        algo.setLabels(patternLabels, targetLabels);
+                    if (nodeLabelled)
+                        algo.setNodeLabels(patternNodeLabels, targetNodeLabels);
                     algo.run();
 
                     std::vector<Match> actual = algo.getMatches();
@@ -444,7 +444,7 @@ TEST_P(RIGTest, testMatchesReferenceOnRandomGraphs) {
                     EXPECT_EQ(actual, expected)
                         << "directed: " << directed
                         << ", induced: " << (semantics == Semantics::INDUCED)
-                        << ", labelled: " << labelled << ", trial: " << trial;
+                        << ", nodeLabelled: " << nodeLabelled << ", trial: " << trial;
                 }
             }
         }
