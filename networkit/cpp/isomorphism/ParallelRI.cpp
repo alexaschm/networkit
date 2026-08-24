@@ -2,14 +2,17 @@
 #include <atomic>
 #include <deque>
 #include <functional>
+#include <random>
 #include <stdexcept>
+#include <thread>
 #include <utility>
 #include <vector>
 
-#include <tlx/unused.hpp>
+#include <omp.h>
 
 #include <networkit/Globals.hpp>
 #include <networkit/auxiliary/Parallelism.hpp>
+#include <networkit/auxiliary/Random.hpp>
 #include <networkit/auxiliary/SignalHandling.hpp>
 #include <networkit/isomorphism/ParallelRI.hpp>
 
@@ -30,19 +33,54 @@ constexpr count MaxPublishInterval = 64;
 /// How many publication rounds per worker to aim for, bounding the overshoot past maxMatches.
 constexpr count PublishRounds = 8;
 
+/// How many states become visible to thieves at a time. Four is what the paper measures as the
+/// best trade between the cost of publishing and how long a stolen task keeps a thief busy; its
+/// Section V-B2 finds 4 best on both PDBSv1 and GRAEMLIN32 and 16 clearly worse.
+constexpr count TaskGroupSize = 4;
+/// How many victims a thief tries before giving up and joining the termination protocol.
+constexpr count StealAttempts = 4;
+
+/// Take a worker's published-queue flag, or report that somebody else holds it.
+///
+/// The critical sections guarded by these are a couple of moves long, so spinning beats anything
+/// the operating system could offer. The asymmetry between the two entry points is the point: an
+/// owner waits for its own flag, a thief never waits at all, so a steal cannot stall behind the
+/// victim's expansion.
+bool tryLockQueue(std::atomic<bool> &flag) {
+    return !flag.exchange(true, std::memory_order_acquire);
+}
+
+void lockQueue(std::atomic<bool> &flag) {
+    while (!tryLockQueue(flag))
+        std::this_thread::yield();
+}
+
+/// Releases what @ref lockQueue() or @ref tryLockQueue() took, however the scope is left.
+class QueueUnlock {
+
+public:
+    explicit QueueUnlock(std::atomic<bool> &flag) : flag(&flag) {}
+    QueueUnlock(const QueueUnlock &) = delete;
+    QueueUnlock &operator=(const QueueUnlock &) = delete;
+    ~QueueUnlock() { flag->store(false, std::memory_order_release); }
+
+private:
+    std::atomic<bool> *flag;
+};
+
 /**
  * The worker pool that drives one RIImpl per thread.
  *
  * ## What each worker owns
  *
- * A private deque of partial mappings, a private RIImpl to expand them with, and a private buffer
+ * A private queue of partial mappings, a private RIImpl to expand them with, and a private buffer
  * and counter for the matches it finds. None of those are shared, so the common path - take a
- * state off my own deque, expand it, push the children back, record a match - touches no memory
+ * state off my own queue, expand it, push the children back, record a match - touches no memory
  * any other thread writes to.
  *
  * The only shared things are: the graph snapshots and the matching order, which are read-only
- * after construction; the victims' deques, touched only when stealing; and three atomics used for
- * stopping. That is the whole synchronization surface.
+ * after construction; the victims' *published* queues, touched only when stealing; and a handful
+ * of atomics used for stopping. That is the whole synchronization surface.
  *
  * ## Where the results go
  *
@@ -56,13 +94,25 @@ constexpr count PublishRounds = 8;
  * @a deliver. It hands a match to whichever callback form was set and handles the serial form's
  * "never entered twice at once" promise itself, so a worker just calls it and moves on.
  *
- * ## The two ends of the deque
+ * ## Two queues, not one deque with two ends
  *
- * The owner works at one end, thieves take from the other. The owner's end holds the newest and
- * therefore deepest states, which are small pieces of work with good cache locality. The thief's
- * end holds the oldest and shallowest, which are the biggest pieces. So the owner gets cheap
- * fast steps and a thief gets one big chunk per steal, which is exactly the split that keeps
- * stealing rare.
+ * The obvious shape is a single deque with the owner at one end and thieves at the other, and it
+ * cannot be built on std::deque: `push_back` and `pop_front` both mutate the container's own
+ * bookkeeping, and one of them may reallocate the map array while the other is reading it.
+ * Concurrently modifying distinct *elements* of a deque is safe; concurrently modifying the deque
+ * is not. So "private" is made literally true by splitting the queue in two.
+ *
+ * - `Worker::states` is touched by nobody but its owner, ever, and needs no atomic of any kind.
+ *   The owner pushes and pops at the **back**, so the walk is depth-first and the queue stays
+ *   proportional to the pattern's depth rather than to the size of the frontier.
+ * - `Worker::stealable` holds the batches the owner has published, and is the only thing the
+ *   `Worker::busy` flag protects. A thief takes from its **front** - the oldest and therefore
+ *   shallowest state on offer, which is the one with the most search tree hanging off it - so one
+ *   steal buys a lot of work and steals stay rare.
+ *
+ * The one rule termination depends on: @ref popLocal() reclaims from `stealable` before it reports
+ * failure. A worker that still had published states but called itself idle would let the token
+ * complete a lap with work outstanding, and the search would end early with a wrong answer.
  */
 class ParallelRIImpl {
 
@@ -100,7 +150,8 @@ public:
           numWorkers(numWorkers == 0 ? 1 : numWorkers),
           // Worker holds an atomic, so it is neither copyable nor movable and vector::resize()
           // would not compile. vector(size_type) only needs default construction, hence here.
-          workers(this->numWorkers), stopped(false), tokenHolder(0), published(0),
+          workers(this->numWorkers), activeWorkers(this->numWorkers), stopped(false),
+          tokenHolder(0), tokenDirty(false), tokenHops(0), published(0),
           // Publish often enough that the workers overshoot maxMatches only slightly, but rarely
           // enough that a large enumeration performs no atomic operations worth speaking of.
           publishInterval(
@@ -116,25 +167,45 @@ public:
     /**
      * Run the parallel search.
      *
-     * TODO: implement.
-     *  1. Seed the roots with seedRoots(). `workers` is already sized by the constructor.
-     *  2. Open an `omp parallel num_threads(numWorkers)` region. Inside it, give each thread its
-     *     own RIImpl built from the shared snapshots, the shared ordering and a reporter bound to
-     *     that thread - `[this, tid](const Match &m) { return recordMatch(tid, m); }` -
-     *     then call workerLoop(tid).
-     *  3. That is all - the loop below handles work, stealing and termination. Do not touch the
-     *     algorithm object from inside the region; recordMatch() is the only channel out.
-     *
-     * Reuse: `Aux::getMaxNumberOfThreads()` from networkit/auxiliary/Parallelism.hpp is what the
-     * caller sizes `numWorkers` with. Note that there is no Aux::getThreadId() to go with it -
-     * the convention throughout NetworKit is a bare omp_get_thread_num() - and that loop indices
-     * in an `omp for` have to be NetworKit::omp_index rather than count.
+     * Everything shared is read-only and already built, so the region below is short: each thread
+     * gives itself an RIImpl bound to its own slot, one thread deals out the roots, and then every
+     * thread runs the same loop. There is no shortcut for a team of one - a single worker walks
+     * the queues, the coalescing and the token ring exactly as sixteen do, which is what makes
+     * comparing worker counts a real test and what the paper's own speedup baseline measures.
      */
     void run() {
-        // TODO: remove once implemented.
-        tlx::unused(patternGraph, targetGraph, patternNodeLabels, targetNodeLabels, ordering,
-                    semantics, variant, handler, numWorkers, workers, stopped, tokenHolder);
-        throw std::logic_error("ParallelRIImpl::run() is not implemented yet");
+        // The bail-out RIImpl::run() does and the expand() path does not: a pattern with more
+        // nodes or a higher maximum degree than the target can match nothing. Guarded on a
+        // non-empty order, because an empty pattern has exactly one match - the empty mapping.
+        if (!ordering->order.empty() && RIImpl::patternCannotFit(*patternGraph, *targetGraph))
+            return;
+
+#pragma omp parallel num_threads(static_cast<int>(numWorkers))
+        {
+            const index tid = static_cast<index>(omp_get_thread_num());
+
+            // One per worker. Under RI-Ds the constructor builds this worker's domains, so
+            // building it here rather than outside means that scan runs on every core at once.
+            RIImpl impl(*patternGraph, *targetGraph, *patternNodeLabels, *targetNodeLabels,
+                        *ordering, semantics, variant, *handler,
+                        [this, tid](const Match &match) { return recordMatch(tid, match); });
+
+#pragma omp single
+            {
+                // OpenMP may give a smaller team than asked for, and never a larger one. Everything
+                // that has to agree on how many workers there really are reads this, never
+                // numWorkers: seeding a queue nobody drains would hang the token ring on a worker
+                // that does not exist. The min() only guards against a runtime that broke the
+                // "never larger" promise, which would otherwise index past `workers`.
+                activeWorkers.store(
+                    std::min<count>(static_cast<count>(omp_get_num_threads()), numWorkers));
+                seedRoots(impl);
+            }
+            // The implicit barrier ending the single is what makes writing into other workers'
+            // private queues above legal: nobody else has started yet.
+
+            workerLoop(tid, impl);
+        }
     }
 
     /**
@@ -172,13 +243,20 @@ public:
 private:
     /// One worker's private state. Padded so two workers never share a cache line.
     struct alignas(64) Worker {
-        /// Partial mappings still to explore. Owner works the back, thieves take the front.
+        /// Partial mappings only this worker may touch. Pushed and popped at the back, so the walk
+        /// is depth-first and the queue stays proportional to the pattern's depth.
         std::deque<RIImpl::State> states;
-        /// Set while the owner is touching its deque, so a thief knows to try somebody else.
+        /// The oldest states, published for stealing. Everything here is behind `busy`.
+        std::deque<RIImpl::State> stealable;
+        /// Size of `stealable`, readable without the lock. This is the paper's work_available: it
+        /// lets a thief skip an empty victim, and the owner skip a pointless publication. Exact
+        /// under the lock, a hint outside it - every read outside is rechecked once the lock is
+        /// held. Sequentially consistent because the termination argument leans on it; see
+        /// @ref passToken().
+        std::atomic<count> offered{0};
+        /// Guards `stealable`. A thief that loses the race moves on rather than waiting.
         std::atomic<bool> busy{false};
-        /// Seed for pickVictim(). Per worker, so choosing a victim needs no shared RNG.
-        uint64_t rngState = 0;
-        /// How many states have been expanded since the last batch was published for stealing.
+        /// How many states have been pushed since the last batch was published for stealing.
         count sinceLastPublish = 0;
         /// Matches this worker found and kept. Merged by takeMatches() after the join.
         std::vector<Match> buffer;
@@ -207,8 +285,10 @@ private:
         if (maxMatches == 0)
             return true;
 
-        // A lone worker knows the global count exactly, so it needs no coordination at all.
-        if (numWorkers == 1)
+        // A lone worker knows the global count exactly, so it needs no coordination at all. This
+        // asks activeWorkers rather than numWorkers, so that a team OpenMP shrank to one still
+        // gets the exact cap instead of the publishInterval approximation.
+        if (activeWorkers.load(std::memory_order_relaxed) == 1)
             return worker.found < maxMatches;
 
         // Several workers: tell the others how far we have got, but only every so often, and
@@ -230,126 +310,249 @@ private:
     /**
      * Create the initial states and spread them over the workers.
      *
-     * TODO: implement. The root of the search tree is the empty mapping, and its children are the
-     * ways of mapping the first pattern node in the order onto a target node. Expanding the root
-     * once here and dealing the resulting states round-robin over the deques gives every worker
-     * something to do immediately, instead of having them all steal from worker 0 at startup.
+     * One expansion of the empty mapping gives the ways of placing the first pattern node in the
+     * order, which is exactly the paper's initial task set. For an empty pattern this is the whole
+     * search, and the match reported here is the empty mapping itself - which is also why the
+     * cap has to be honoured on this path.
+     *
+     * Called from inside `omp single`, so writing into other workers' private queues is legal:
+     * they are all waiting at the barrier that ends it.
+     *
+     * @param impl The seeding thread's own RIImpl, whose reporter is bound to that thread's slot.
      */
-    void seedRoots() { throw std::logic_error("ParallelRIImpl::seedRoots() is not implemented"); }
+    void seedRoots(RIImpl &impl) {
+        RIImpl::State root;
+        root.mapping.assign(ordering->order.size(), none);
+
+        std::vector<RIImpl::State> roots;
+        if (!impl.expand(root, roots)) {
+            stopped.store(true, std::memory_order_relaxed);
+            return;
+        }
+
+        // Round-robin rather than in blocks, so every worker has something to do immediately
+        // instead of all of them starting by stealing from worker 0.
+        const count active = activeWorkers.load();
+        index next = 0;
+        for (RIImpl::State &state : roots) {
+            workers[next].states.push_back(std::move(state));
+            next = static_cast<index>((next + 1) % active);
+        }
+    }
 
     /**
      * What one worker does for the whole search.
      *
-     * TODO: implement.
-     *  1. Loop: pop a state from my own deque with popLocal(). If there is none, try trySteal().
-     *     If that fails too, join the termination protocol via passToken() and check quiescent().
-     *  2. Expand the state with my own RIImpl and push the children back with pushLocal().
-     *  3. If expand() returns false the match limit was reached: set `stopped` and return, which
-     *     unwinds every other worker as well.
-     *  4. Call `handler->isRunning()` and on false set `stopped` and return, so every worker
-     *     winds down.
-     *
-     * Step 4 must use isRunning() and never assureRunning(): an exception escaping an OpenMP
-     * structured block is undefined behaviour. ParallelRI::run() calls assureRunning() once,
-     * after the region has joined, which is where the InterruptException actually comes from.
-     * This is the pattern Betweenness.cpp uses.
+     * Take a state - my own if I have one, somebody else's if I have not - expand it by one level,
+     * push the children back, repeat. With nothing left to take, say so by moving the termination
+     * token on, and stop once it has been all the way round with nobody having found work.
      */
-    void workerLoop(index tid) {
-        tlx::unused(tid);
-        throw std::logic_error("ParallelRIImpl::workerLoop() is not implemented yet");
+    void workerLoop(index tid, RIImpl &impl) {
+        RIImpl::State state;
+        std::vector<RIImpl::State> children;
+
+        while (!stopped.load(std::memory_order_relaxed)) {
+            if (!popLocal(tid, state) && !trySteal(tid, state)) {
+                passToken(tid);
+                if (quiescent())
+                    return;
+                std::this_thread::yield();
+                continue;
+            }
+
+            // isRunning() and never assureRunning(): an exception leaving an OpenMP structured
+            // block is undefined behaviour. ParallelRI::run() throws once, after the join.
+            if (!handler->isRunning()) {
+                stopped.store(true, std::memory_order_relaxed);
+                return;
+            }
+
+            children.clear();
+            // A state that is already at full depth is reported by expand() itself, so a match
+            // costs one queue round trip and every matching rule stays inside RIImpl - which is
+            // the module's rule against the two searches drifting apart.
+            if (!impl.expand(state, children)) {
+                // The cap was reached inside the reporter. Everyone else finds out through
+                // `stopped`, which is also what ends their token laps.
+                stopped.store(true, std::memory_order_relaxed);
+                return;
+            }
+
+            for (RIImpl::State &child : children)
+                pushLocal(tid, std::move(child));
+        }
     }
 
     /**
-     * Take a state off worker @a tid's own end of its deque.
+     * Take a state off worker @a tid's own end of its queue.
      *
-     * TODO: implement. Pop from the back. This is the hot path, so it must stay free of atomics
-     * in the common case; only the handful of states near the stealing end need any care, and
-     * that is what the `busy` flag is for.
-     *
-     * @return false if the deque is empty.
+     * @return false if this worker has nothing left at all, which is the definition of idle that
+     *         the termination protocol rests on.
      */
     bool popLocal(index tid, RIImpl::State &out) {
-        tlx::unused(tid, out);
-        throw std::logic_error("ParallelRIImpl::popLocal() is not implemented yet");
+        Worker &worker = workers[tid];
+
+        // The common case, and the reason for the split: my own newest state, no atomic anywhere.
+        if (!worker.states.empty()) {
+            out = std::move(worker.states.back());
+            worker.states.pop_back();
+            return true;
+        }
+
+        // Nothing private left, so take back what nobody stole. Reporting "idle" while states are
+        // still sitting here would let the token finish a lap with work outstanding. The load is
+        // exact rather than a hint: only the owner ever *adds* to `stealable`, so a zero it reads
+        // about its own queue cannot go stale under it.
+        if (worker.offered.load() == 0)
+            return false;
+
+        lockQueue(worker.busy);
+        const QueueUnlock guard(worker.busy);
+        if (worker.stealable.empty())
+            return false;
+
+        // From the newest end: the oldest are the biggest subtrees and are worth more to a thief.
+        out = std::move(worker.stealable.back());
+        worker.stealable.pop_back();
+        worker.offered.store(worker.stealable.size());
+        return true;
+    }
+
+    /// Push a freshly produced state onto worker @a tid's own end, publishing a batch when enough
+    /// have piled up.
+    void pushLocal(index tid, RIImpl::State &&state) {
+        Worker &worker = workers[tid];
+        worker.states.push_back(std::move(state));
+        if (++worker.sinceLastPublish >= TaskGroupSize)
+            coalesceIntoTask(tid);
     }
 
     /**
-     * Push a freshly produced state onto worker @a tid's own end.
+     * Make a batch of this worker's oldest states available for stealing.
      *
-     * TODO: implement. Push to the back, then bump sinceLastPublish and call coalesceIntoTask()
-     * when it crosses the threshold.
+     * Expanding one state is far too cheap to justify the synchronization a steal costs, so states
+     * become visible in batches rather than one at a time.
      */
-    void pushLocal(index tid, RIImpl::State &&state) {
-        tlx::unused(tid, state);
-        throw std::logic_error("ParallelRIImpl::pushLocal() is not implemented yet");
+    void coalesceIntoTask(index tid) {
+        Worker &worker = workers[tid];
+        worker.sinceLastPublish = 0;
+
+        // Nothing to gain from a second group while the first is still on offer, and something to
+        // lose: publishing gives away the states with the most work under them.
+        if (worker.offered.load() != 0)
+            return;
+
+        // Never publish down to nothing. A worker that gives away everything goes straight back to
+        // stealing, which is the cost this mechanism exists to avoid.
+        if (worker.states.size() <= TaskGroupSize)
+            return;
+
+        const count batch = std::min<count>(TaskGroupSize, worker.states.size() - TaskGroupSize);
+
+        lockQueue(worker.busy);
+        const QueueUnlock guard(worker.busy);
+        for (count i = 0; i < batch; ++i) {
+            worker.stealable.push_back(std::move(worker.states.front()));
+            worker.states.pop_front();
+        }
+        worker.offered.store(worker.stealable.size());
     }
 
     /**
      * Try to take work from somebody else.
      *
-     * TODO: implement. Pick a victim with pickVictim(), take from the *front* of its deque -
-     * the opposite end from where the owner works, so the two rarely collide - and give up after
-     * a few unsuccessful attempts rather than spinning. Returning false is normal and simply
-     * means "nothing to steal right now"; the caller then goes into the termination protocol.
-     *
-     * @return false if nothing could be stolen.
+     * Returning false is normal and simply means "nothing to steal right now"; the caller then
+     * goes into the termination protocol.
      */
     bool trySteal(index thief, RIImpl::State &out) {
-        tlx::unused(thief, out);
-        throw std::logic_error("ParallelRIImpl::trySteal() is not implemented yet");
+        if (activeWorkers.load() < 2)
+            return false;
+
+        for (count attempt = 0; attempt < StealAttempts; ++attempt) {
+            Worker &victim = workers[pickVictim(thief)];
+
+            // Two cheap rejections before the expensive one. Both are loads on a line this thief
+            // never writes to.
+            if (victim.offered.load() == 0)
+                continue;
+            if (!tryLockQueue(victim.busy))
+                continue;
+
+            const QueueUnlock guard(victim.busy);
+            if (victim.stealable.empty())
+                continue;
+
+            // Somebody has work again, so any termination lap in progress is void. Set *inside*
+            // the victim's critical section, which is what makes the lap argument in passToken()
+            // hold: the victim can only declare itself idle after finding this queue empty, and it
+            // can only find it empty by taking this lock after we have let it go.
+            tokenDirty.store(true);
+
+            out = std::move(victim.stealable.front());
+            victim.stealable.pop_front();
+            victim.offered.store(victim.stealable.size());
+            return true;
+        }
+
+        return false;
     }
 
     /**
-     * Choose whom to steal from.
+     * Choose whom to steal from: a uniformly random worker other than @a thief.
      *
-     * TODO: implement. Draw a uniformly random worker other than @a thief, using that worker's
-     * own rngState so no two threads share an RNG. Random choice is what keeps the load balanced
-     * without anybody having to track who is busy.
-     *
-     * Reuse: `Aux::Random::getURNG()` is already thread-local, so it gives a private generator per
-     * worker with no seeding work and no extra field. Using it here would make Worker::rngState
-     * redundant. The documented idiom is to bind the reference once outside the loop and drive a
-     * std::uniform_int_distribution with it, rather than calling Aux::Random::integer() per draw.
+     * Random choice is what keeps the load balanced without anybody having to track who is busy.
      */
     index pickVictim(index thief) {
-        tlx::unused(thief);
-        throw std::logic_error("ParallelRIImpl::pickVictim() is not implemented yet");
+        // Thread-local already, so no seeding, no shared generator and no per-worker field.
+        auto &urng = Aux::Random::getURNG();
+        const count active = activeWorkers.load();
+
+        // Drawn from a range one short and shifted past myself, so every other worker is equally
+        // likely and no draw is ever thrown away.
+        std::uniform_int_distribution<index> pick(0, static_cast<index>(active) - 2);
+        const index drawn = pick(urng);
+        return drawn < thief ? drawn : drawn + 1;
     }
 
     /**
-     * Make a batch of this worker's states available for stealing.
+     * Move the termination token one step around the ring, on behalf of an idle worker @a tid.
      *
-     * TODO: implement. Expanding one state is far too cheap to justify the synchronization a
-     * steal costs, so states become visible in batches rather than one at a time. Publish the
-     * oldest batch, reset sinceLastPublish, and leave the newest states private to the owner.
-     */
-    void coalesceIntoTask(index tid) {
-        tlx::unused(tid);
-        throw std::logic_error("ParallelRIImpl::coalesceIntoTask() is not implemented yet");
-    }
-
-    /**
-     * Move the termination token one step around the ring.
+     * Working out that *everybody* has finished is itself a synchronization problem, and a shared
+     * counter of busy workers would be contended hardest exactly when the search is winding down.
+     * So a token walks a ring instead: a worker with states left simply stalls it where it is,
+     * which is what makes a completed lap mean something.
      *
-     * TODO: implement. An idle worker holding the token passes it to (tid + 1) % numWorkers. Any
-     * worker that finds new work in the meantime marks the token dirty, which cancels the lap.
-     * The ring exists so that detecting "everyone is done" does not need a counter that every
-     * worker writes to - that counter would be contended precisely when the search is winding
-     * down and workers are idling fastest.
+     * Why the lap is sound. A worker calls this only about itself and only when @ref popLocal()
+     * has just reported both its queues empty, so a worker in the middle of an expansion is never
+     * counted as idle. A worker with nothing can only acquire work by stealing, and every
+     * successful steal sets `tokenDirty` while holding the victim's queue. Suppose a lap of
+     * `activeWorkers` clean hops finished at time T and some worker j still had work then. Worker
+     * j hopped during that lap, so it was empty at its own hop and must have stolen afterwards and
+     * before T. That steal is ordered before the lap's final hop - it cannot be the final hop's
+     * own worker, which was idle - so that hop, or an earlier one, reads the flag set and zeroes
+     * the counter, and the lap never completes. Hence no lap can complete while work remains.
+     *
+     * `tokenDirty` and `Worker::offered` are sequentially consistent for exactly that argument:
+     * they are the two things the victim looks at between the thief's store and its own hop, and
+     * both are cold paths where the strong ordering costs nothing.
      */
     void passToken(index tid) {
-        tlx::unused(tid);
-        throw std::logic_error("ParallelRIImpl::passToken() is not implemented yet");
+        if (tokenHolder.load() != tid)
+            return;
+
+        if (tokenDirty.exchange(false))
+            tokenHops.store(0);
+        else
+            tokenHops.fetch_add(1);
+
+        const count active = activeWorkers.load();
+        tokenHolder.store(static_cast<index>((tid + 1) % active));
     }
 
-    /**
-     * Whether the search is over.
-     *
-     * TODO: implement. True once the token has made a full lap of the ring without any worker
-     * having found new work, or once `stopped` is set because the match limit was hit.
-     */
+    /// Whether the search is over: a full lap of the ring with nobody having found work, or the
+    /// match limit reached, or an interrupt.
     bool quiescent() const {
-        throw std::logic_error("ParallelRIImpl::quiescent() is not implemented yet");
+        return stopped.load(std::memory_order_relaxed) || tokenHops.load() >= activeWorkers.load();
     }
 
     const SearchGraph *patternGraph;
@@ -377,10 +580,21 @@ private:
 
     std::vector<Worker> workers;
 
+    /// How many workers OpenMP actually started, which is at most `numWorkers`. Written once
+    /// inside `omp single` and read by everything that has to agree on the size of the ring.
+    /// Atomic rather than a plain member so that ThreadSanitizer, which cannot see through
+    /// libgomp's barriers, does not report the handover as a race.
+    std::atomic<count> activeWorkers;
+
     /// Set when the match limit is reached or the search is interrupted, so every worker unwinds.
     std::atomic<bool> stopped;
     /// Who currently holds the termination token.
     std::atomic<index> tokenHolder;
+    /// Set by any thief the moment a steal succeeds. The next hop reads and clears it, and voids
+    /// the lap in progress.
+    std::atomic<bool> tokenDirty;
+    /// Hops since the last void. Reaching `activeWorkers` means the search is over.
+    std::atomic<count> tokenHops;
 
     /// Running total of the matches the workers have published. Only touched when maxMatches != 0
     /// and more than one worker is running.

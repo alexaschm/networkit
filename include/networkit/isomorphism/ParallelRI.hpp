@@ -23,11 +23,14 @@ namespace NetworKit {
  * one branch may die immediately while its sibling contains millions of matches - so handing each
  * worker a fixed slice of it up front would leave most of them idle almost at once.
  *
- * Instead each worker keeps a **private double-ended queue** of partial mappings. It pushes and
- * pops at one end, which is its own and needs no synchronization whatsoever. When a worker runs
- * out of work it **steals** from the *other* end of some randomly chosen victim's queue. Taking
- * from the far end is deliberate: that is where the oldest, shallowest, and therefore largest
- * pieces of the search tree sit, so one steal buys a lot of work and steals stay rare.
+ * Instead each worker keeps a **private queue** of partial mappings. It pushes and pops at the
+ * newest end, which is genuinely its own: no other thread ever touches that queue, so the common
+ * path performs no atomic operation of any kind. Only the oldest few states a worker owns are
+ * ever **published** into a second, small queue that thieves may reach, and that second queue is
+ * the only thing a lock protects. When a worker runs out of work it **steals** from the far end of
+ * what some randomly chosen victim has published. Taking from the far end is deliberate: that is
+ * where the oldest, shallowest, and therefore largest pieces of the search tree sit, so one steal
+ * buys a lot of work and steals stay rare.
  *
  * Two refinements make this pay off:
  *
