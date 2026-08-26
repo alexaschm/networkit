@@ -27,11 +27,12 @@ namespace IsomorphismDetails {
  *
  * ## How it is split
  *
- * The expensive preparation - working out the order in which pattern nodes get mapped - depends
- * only on the two graphs, not on where the search currently is. It is therefore a @b static
- * function producing an @ref Ordering, which the caller computes once. @ref RI computes it and
- * uses it itself; @ref ParallelRI computes it once and shares the same read-only object with
- * every worker.
+ * The expensive preparation - working out which target nodes each pattern node could take, and
+ * then the order in which pattern nodes get mapped - depends only on the two graphs, not on where
+ * the search currently is. It is therefore two @b static functions producing a @ref Domains and an
+ * @ref Ordering, which the caller computes once, in that order: under RI-Ds the order is read off
+ * the domain sizes. @ref RI computes both and uses them itself; @ref ParallelRI computes them once
+ * and shares the same two read-only objects with every worker.
  *
  * The search then comes in two flavours:
  *
@@ -48,15 +49,15 @@ namespace IsomorphismDetails {
  *
  * ## What the constructor does, and why
  *
- * Sizing @ref matchBuffer and building the RI-Ds domains both happen in the **constructor**, not
- * in @ref run(). @ref ParallelRI builds one RIImpl per worker and those workers only ever call
- * @ref expand(), so anything set up in run() would simply be missing on that path: RI-Ds would
- * quietly degrade to RI, `domains[j]` would index out of bounds, and a zero-length matchBuffer
- * would report empty matches. The constructor is the only placement that covers both entry points,
- * and it puts the domain scan inside the OpenMP region, where it runs in parallel.
+ * Sizing @ref matchBuffer happens in the **constructor**, not in @ref run(). @ref ParallelRI builds
+ * one RIImpl per worker and those workers only ever call @ref expand(), so anything set up in run()
+ * would simply be missing on that path and a zero-length matchBuffer would report empty matches.
+ * The constructor is the only placement that covers both entry points.
  *
- * `domains` is immutable after construction. That is what makes a @ref State evaluable by any
- * worker: nothing about the search depends on which worker got there first.
+ * The domains are *not* built here. They are a @ref Domains the caller computed before the order -
+ * it has to be, because under RI-Ds the order is computed from the domain sizes - and this object
+ * only holds a pointer to it. Being shared and immutable is what makes a @ref State evaluable by
+ * any worker: nothing about the search depends on which worker got there first.
  *
  * ## Why there is no bookkeeping
  *
@@ -66,10 +67,11 @@ namespace IsomorphismDetails {
  * order and from what is already mapped. Each step is therefore very cheap, and RI wins by taking
  * many cheap steps rather than few expensive ones.
  *
- * The one exception is @ref RI::Variant::RI_DS, which computes a candidate domain per position
- * once, before the search, and then intersects candidate lists with it. Those live in `domains`
- * and are only touched in that variant. There is no forward checking and no domain reduction
- * during backtracking: the paper measured that heavier per-step pruning does not pay off.
+ * The one exception is @ref RI::Variant::RI_DS, which computes a candidate domain per pattern node
+ * once, before the search, and then intersects candidate lists with it. Those live in @ref Domains
+ * and are only populated in that variant. Forward checking happens there too, as one preprocessing
+ * step; nothing prunes a domain once the search is running and nothing has to be restored on
+ * backtracking, which is what keeps a step cheap.
  */
 class RIImpl {
 
@@ -86,6 +88,60 @@ public:
         std::vector<node> order;
         std::vector<index> parent;
     };
+
+    /**
+     * Per-pattern-node candidate sets, computed once and shared read-only by every worker.
+     *
+     * Indexed by *pattern node id*, never by position in the order: under RI-Ds the order is
+     * computed from these, so it does not exist yet when they are built.
+     */
+    struct Domains {
+        /// `ofPatternNode[pu]` lists the target nodes @a pu could map to, ascending. Empty under
+        /// plain RI, and then nothing here is consulted at all.
+        std::vector<std::vector<node>> ofPatternNode;
+
+        /// Whether intersecting a target *slice* with the domain repays the binary search it
+        /// costs. Pure economics: clearing an entry cannot change which matches are found. See
+        /// MinSweepYieldForSliceIntersection in the .cpp.
+        std::vector<bool> earnsItsKeep;
+
+        /// Some pattern node has nowhere to go, so the instance has no matches at all. Precomputed
+        /// here so that both drivers get the same early exit from the same place.
+        bool anyEmpty = false;
+    };
+
+    /**
+     * RI-DS only: work out which target nodes each pattern node could possibly map to.
+     *
+     * Returns an empty @ref Domains under plain RI, which every consumer reads as "no domains".
+     * Otherwise it runs three steps, each exactly once.
+     *
+     * **Build.** One pass per pattern node over the target ids in ascending order - which leaves
+     * each domain sorted, as every consumer requires - keeping the ids that could host that node at
+     * all: existing, degree-dominating, label-compatible. That judgement never consults a partial
+     * mapping, which is what makes a domain a *superset* of the true image set and intersecting
+     * with it sound.
+     *
+     * **Refinement sweep.** A target node survives only if, for every pattern node its owner is
+     * adjacent to, that node's domain is reachable across an arc of the right direction and a
+     * compatible label. One pass over the domains, deliberately not run to convergence: on a large
+     * unlabelled target a domain approaches the whole node set, which makes the sweep the one
+     * costly part of RI-Ds.
+     *
+     * **Forward checking.** The paper's Section 4.2.2, one call to the file-local
+     * forwardCheckSingletons(). See its comment for why its inner worklist is not a second pass.
+     *
+     * How much the sweep and the forward check removed between them is then recorded per node in
+     * @ref Domains::earnsItsKeep, which is what decides whether the domain is worth applying to a
+     * target slice later. The build's own removals do not count towards that: @ref consistent()
+     * rejects exactly those candidates already, and more cheaply.
+     *
+     * Static, and called by the driver before @ref computeOrdering(), because the order depends on
+     * the domain sizes and because one shared copy replaces one per worker.
+     */
+    static Domains computeDomains(const SearchGraph &pattern, const SearchGraph &target,
+                                  const std::vector<index> &patternNodeLabels,
+                                  const std::vector<index> &targetNodeLabels, RI::Variant variant);
 
     /**
      * One partial mapping: a position in the search tree.
@@ -128,18 +184,20 @@ public:
      * remaining candidate scores zero on the first two terms, so the triple degenerates to degree
      * alone and the next component restarts at its largest node, with @ref none as its parent.
      *
+     * Under RI-Ds the domains add two things on top, both from Kimmig, Meyerhenke and Strash
+     * (2017). Every pattern node whose domain holds exactly one target node is appended **before**
+     * any node whose domain is larger - their Section 4.1 - because such a node's image is already
+     * decided and mapping it first constrains everything else for free. And a candidate that ties
+     * on the whole triple is settled by the smaller domain, their Section 4.2.1, which slots in one
+     * level above the id tie-break rather than replacing the triple's third term: the paper calls
+     * that term the degree, but Bonnici's - and this file's - is `V_unv`, so domain size is a
+     * *fourth* key. Under plain RI both are inert, so the emitted order is unchanged.
+     *
      * @param pattern Snapshot of the pattern.
-     * @param target Unused. Kept because both drivers pass it and because a target-aware variant
-     *        would plug in here; RI's ordering is target-independent, which is the paper's claim.
-     * @param patternNodeLabels Unused, as above.
-     * @param targetNodeLabels Unused, as above.
-     * @param variant Unused: RI-Ds orders exactly as plain RI does. There is no domain-size
-     *        tie-break, because that is what the paper's measurements advise against.
+     * @param domains Computed by @ref computeDomains() beforehand. Empty under plain RI, in which
+     *        case the order depends on the pattern alone, exactly as the original paper claims.
      */
-    static Ordering computeOrdering(const SearchGraph &pattern, const SearchGraph &target,
-                                    const std::vector<index> &patternNodeLabels,
-                                    const std::vector<index> &targetNodeLabels,
-                                    RI::Variant variant);
+    static Ordering computeOrdering(const SearchGraph &pattern, const Domains &domains);
 
     /**
      * Inputs no match can survive, judged before the search starts.
@@ -159,8 +217,9 @@ public:
      * @param patternNodeLabels Empty when the search is unlabelled.
      * @param targetNodeLabels Empty when the search is unlabelled.
      * @param ordering Shared, read-only; must outlive this object.
+     * @param domains Shared, read-only; must outlive this object. Empty under plain RI, which is
+     *        how the variant reaches the search - there is no separate flag.
      * @param semantics Whether matches must be induced.
-     * @param variant Plain RI or RI-DS.
      * @param handler Polled so a long search can be stopped with CTRL+C. Shared between
      *        workers; only the non-throwing isRunning() may be used, since ParallelRI runs this
      *        inside an OpenMP region.
@@ -168,8 +227,9 @@ public:
      */
     RIImpl(const SearchGraph &pattern, const SearchGraph &target,
            const std::vector<index> &patternNodeLabels, const std::vector<index> &targetNodeLabels,
-           const Ordering &ordering, SubgraphIsomorphism::Semantics semantics, RI::Variant variant,
-           Aux::SignalHandler &handler, MatchReporter report);
+           const Ordering &ordering, const Domains &domains,
+           SubgraphIsomorphism::Semantics semantics, Aux::SignalHandler &handler,
+           MatchReporter report);
 
     /**
      * Run the entire search from the empty mapping. Used by @ref RI.
@@ -232,8 +292,8 @@ private:
      *
      * When it has none, this position starts a new component and every existing target node
      * qualifies - `hasNode()` is what separates a removed id from an isolated node. Under RI_DS
-     * the position's domain replaces or intersects the list, both of them strictly ascending, so
-     * that is a merge and not a lookup.
+     * the pattern node's domain replaces or intersects the list, both of them strictly ascending,
+     * so that is a merge and not a lookup.
      *
      * Target nodes already used are deliberately not filtered out here; injectivity lives in
      * @ref ruleEdgesToPrefix() and nowhere else.
@@ -281,32 +341,6 @@ private:
     bool ruleLabels(node pu, node tv) const;
 
     /**
-     * RI-DS only: work out which target nodes each position could possibly map to.
-     *
-     * Returns immediately under plain RI. Otherwise it builds `domains` in two halves. First, one
-     * pass per position over the target ids in ascending order - which leaves each domain sorted,
-     * as every consumer requires - keeping the ids that could host the position's pattern node at
-     * all: existing, degree-dominating, label-compatible. That judgement never consults the partial
-     * mapping, which is what makes a domain a *superset* of the true image set and intersecting
-     * with it sound.
-     *
-     * Then a single refinement sweep: a target node survives only if, for every other position its
-     * pattern node is adjacent to, that position's domain is reachable across an arc of the right
-     * direction and a compatible label. Not run to convergence, and separable on purpose - on a
-     * large unlabelled target a domain approaches the whole node set, which makes the sweep the one
-     * costly part of RI-Ds. It is pure pruning, so gating it behind a size threshold would always
-     * be safe.
-     *
-     * How much that sweep removed is then recorded per position in @ref domainEarnsItsKeep, which
-     * is what decides whether the domain is worth applying to a target slice later. The build's own
-     * removals do not count towards that: @ref consistent() rejects exactly those candidates
-     * already, and more cheaply.
-     *
-     * Called from the constructor, so `domains` exists on the expand() path too.
-     */
-    void initializeDomains();
-
-    /**
      * Hand a complete mapping over.
      *
      * `state.mapping` is indexed by position in the order, but the reporter expects a vector
@@ -328,8 +362,12 @@ private:
     /// Shared with every other worker. Never modified after construction.
     const Ordering *ordering;
 
+    /// Shared with every other worker, and the only thing that tells the search which variant it
+    /// is running: `ofPatternNode` is empty under plain RI. Never modified after construction,
+    /// which is what lets any worker evaluate any State.
+    const Domains *domains;
+
     SubgraphIsomorphism::Semantics semantics;
-    RI::Variant variant;
 
     /// Shared with every other worker. Poll it as `handler->isRunning()` and stop on false -
     /// never assureRunning(), because ParallelRI runs this inside an OpenMP region and an
@@ -337,18 +375,6 @@ private:
     Aux::SignalHandler *handler;
 
     MatchReporter report;
-
-    /// RI_DS only: domains[i] lists the target nodes position i could map to. Empty under RI.
-    /// Built by the constructor and never touched again, which is what lets any worker evaluate
-    /// any State.
-    std::vector<std::vector<node>> domains;
-
-    /// RI_DS only: whether domains[i] is worth intersecting a *target slice* with, decided once
-    /// from how much the refinement sweep removed. False leaves the domain in place for the
-    /// parentless path, where it replaces a full scan and always wins, while letting the slice
-    /// path skip a binary search that would only re-reject what consistent() rejects for two
-    /// integer compares. Pure economics: clearing it cannot change which matches are found.
-    std::vector<bool> domainEarnsItsKeep;
 
     /// Reused buffer handed to the reporter, indexed by pattern node. Sized by the constructor.
     SubgraphIsomorphism::Match matchBuffer;

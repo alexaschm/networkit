@@ -127,8 +127,9 @@ public:
      * @param patternNodeLabels Empty when the search is unlabelled.
      * @param targetNodeLabels Empty when the search is unlabelled.
      * @param ordering Shared read-only matching order, computed once by the caller.
+     * @param domains Shared read-only RI-Ds domains, computed once by the caller before the order.
+     *        Empty under plain RI, which is how the variant reaches the workers.
      * @param semantics Whether matches must be induced.
-     * @param variant Plain RI or RI-DS.
      * @param handler Shared by every worker. Only its non-throwing isRunning() may be called
      *        from inside the parallel region.
      * @param deliver Where the user's callback is invoked. Called from several threads at once.
@@ -140,12 +141,12 @@ public:
     ParallelRIImpl(const SearchGraph &patternGraph, const SearchGraph &targetGraph,
                    const std::vector<index> &patternNodeLabels,
                    const std::vector<index> &targetNodeLabels, const RIImpl::Ordering &ordering,
-                   SubgraphIsomorphism::Semantics semantics, RI::Variant variant,
+                   const RIImpl::Domains &domains, SubgraphIsomorphism::Semantics semantics,
                    Aux::SignalHandler &handler, Deliver deliver, bool storeMatches,
                    count maxMatches, count numWorkers)
         : patternGraph(&patternGraph), targetGraph(&targetGraph),
           patternNodeLabels(&patternNodeLabels), targetNodeLabels(&targetNodeLabels),
-          ordering(&ordering), semantics(semantics), variant(variant), handler(&handler),
+          ordering(&ordering), domains(&domains), semantics(semantics), handler(&handler),
           deliver(std::move(deliver)), storeMatches(storeMatches), maxMatches(maxMatches),
           numWorkers(numWorkers == 0 ? 1 : numWorkers),
           // Worker holds an atomic, so it is neither copyable nor movable and vector::resize()
@@ -174,20 +175,23 @@ public:
      * comparing worker counts a real test and what the paper's own speedup baseline measures.
      */
     void run() {
-        // The bail-out RIImpl::run() does and the expand() path does not: a pattern with more
-        // nodes or a higher maximum degree than the target can match nothing. Guarded on a
+        // The bail-outs RIImpl::run() does and the expand() path does not: a pattern with more
+        // nodes or a higher maximum degree than the target can match nothing, and under RI-Ds
+        // neither can one whose domains left a pattern node with nowhere to go. Guarded on a
         // non-empty order, because an empty pattern has exactly one match - the empty mapping.
-        if (!ordering->order.empty() && RIImpl::patternCannotFit(*patternGraph, *targetGraph))
+        if (!ordering->order.empty()
+            && (RIImpl::patternCannotFit(*patternGraph, *targetGraph) || domains->anyEmpty))
             return;
 
 #pragma omp parallel num_threads(static_cast<int>(numWorkers))
         {
             const index tid = static_cast<index>(omp_get_thread_num());
 
-            // One per worker. Under RI-Ds the constructor builds this worker's domains, so
-            // building it here rather than outside means that scan runs on every core at once.
+            // One per worker, and cheap: it sizes a buffer and takes two pointers. The domains it
+            // reads were built once by the caller, so sixteen workers share one copy of what used
+            // to be sixteen scans of the whole target.
             RIImpl impl(*patternGraph, *targetGraph, *patternNodeLabels, *targetNodeLabels,
-                        *ordering, semantics, variant, *handler,
+                        *ordering, *domains, semantics, *handler,
                         [this, tid](const Match &match) { return recordMatch(tid, match); });
 
 #pragma omp single
@@ -564,8 +568,11 @@ private:
     /// Computed once by the caller and read by every worker. Never modified here.
     const RIImpl::Ordering *ordering;
 
+    /// Likewise: one shared copy rather than one per worker, which is what the RI-Ds preprocessing
+    /// being lifted out of RIImpl's constructor buys. Never modified here.
+    const RIImpl::Domains *domains;
+
     SubgraphIsomorphism::Semantics semantics;
-    RI::Variant variant;
 
     /// Shared by every worker. Inside the region only the non-throwing isRunning() may be
     /// called on it; ParallelRI::run() does the throwing assureRunning() once, after the join.
@@ -633,14 +640,20 @@ void ParallelRI::run() {
     if (patternGraph.collapsedLabelledEdges() || targetGraph.collapsedLabelledEdges())
         throw std::runtime_error("ParallelRI does not support parallel edges whose edge labels "
                                  "disagree - see SubgraphIsomorphism::setEdgeLabels()");
-    const RIImpl::Ordering ordering = RIImpl::computeOrdering(
+
+    // Built once, before the order, because under RI-Ds the order is computed from the domain
+    // sizes - and because one shared copy replaces the one every worker used to build for itself.
+    // Empty and free under plain RI.
+    const RIImpl::Domains domains = RIImpl::computeDomains(
         patternGraph, targetGraph, patternNodeLabels, targetNodeLabels, variant);
+
+    const RIImpl::Ordering ordering = RIImpl::computeOrdering(patternGraph, domains);
 
     // The lambda is what gets the workers at the user's callback: they are not subclasses and so
     // cannot reach the protected invokeCallback() themselves, but run() can.
     ParallelRIImpl impl(
-        patternGraph, targetGraph, patternNodeLabels, targetNodeLabels, ordering, semantics,
-        variant, handler,
+        patternGraph, targetGraph, patternNodeLabels, targetNodeLabels, ordering, domains,
+        semantics, handler,
         [this](index tid, const Match &match) { return invokeCallback(tid, match); },
         storesMatches(), maxMatches, numWorkers);
     impl.run();

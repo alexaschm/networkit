@@ -33,13 +33,17 @@ void RI::run() {
         throw std::runtime_error("RI does not support parallel edges whose edge labels disagree - "
                                  "see SubgraphIsomorphism::setEdgeLabels()");
 
-    // Deciding the matching order is the expensive part of RI, and it depends only on the two
-    // graphs. ParallelRI computes exactly the same thing once and shares it across its workers.
-    const RIImpl::Ordering ordering = RIImpl::computeOrdering(
+    // The domains come first, because under RI-Ds the order is computed from their sizes. Empty
+    // and free under plain RI. ParallelRI computes exactly the same two things once and shares
+    // them across its workers.
+    const RIImpl::Domains domains = RIImpl::computeDomains(
         patternGraph, targetGraph, patternNodeLabels, targetNodeLabels, variant);
 
-    RIImpl(patternGraph, targetGraph, patternNodeLabels, targetNodeLabels, ordering, semantics,
-           variant, handler, [this](const Match &match) { return reportMatch(match); })
+    // Deciding the matching order is the expensive part of RI.
+    const RIImpl::Ordering ordering = RIImpl::computeOrdering(patternGraph, domains);
+
+    RIImpl(patternGraph, targetGraph, patternNodeLabels, targetNodeLabels, ordering, domains,
+           semantics, handler, [this](const Match &match) { return reportMatch(match); })
         .run();
 
     // RIImpl may only poll isRunning(), so an interrupted search just returns. Without this, that

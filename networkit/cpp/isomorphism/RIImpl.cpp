@@ -3,8 +3,6 @@
 #include <utility>
 #include <vector>
 
-#include <tlx/unused.hpp>
-
 #include <networkit/auxiliary/SparseVector.hpp>
 
 #include "RIImpl.hpp"
@@ -163,17 +161,90 @@ bool intersectsDomain(const node *begin, const node *end, const index *labels, i
  */
 constexpr double MinSweepYieldForSliceIntersection = 0.8;
 
+/**
+ * Forward checking over the finished domains - Section 4.2.2 of Kimmig, Meyerhenke and Strash.
+ *
+ * A pattern node whose domain holds exactly one target node will be mapped onto that node in every
+ * match there is, so injectivity forbids that node to every other pattern node. Removing it can
+ * shrink another domain from two entries to one, creating a singleton that did not exist when the
+ * pass started, so the worklist below keeps going until no new singleton appears - the paper's "We
+ * repeat this procedure for any newly introduced singleton domains". That loop is internal:
+ * forward checking itself is one preprocessing step, run once, from @ref RIImpl::computeDomains().
+ *
+ * Sound for the same reason the refinement sweep is: it only ever removes a target node that no
+ * match could have used, so a domain stays a superset of the images its pattern node can take.
+ *
+ * Nearly always free. With no singleton anywhere in the pattern - the usual case on an unlabelled
+ * target - it costs one scan over the pattern nodes and stops.
+ *
+ * @return false when some domain ran empty, which means the instance has no matches at all.
+ */
+bool forwardCheckSingletons(const SearchGraph &pattern, std::vector<std::vector<node>> &domains) {
+    const count z = pattern.upperNodeIdBound();
+
+    // A node enters the worklist at most once. Its domain can still shrink afterwards, but only to
+    // empty, and that is caught at the erase below rather than by re-queueing.
+    std::vector<bool> queued(z, false);
+    std::vector<node> pending;
+
+    for (node pu = 0; pu < z; ++pu) {
+        if (!pattern.hasNode(pu))
+            continue;
+        if (domains[pu].empty())
+            return false;
+        if (domains[pu].size() == 1) {
+            queued[pu] = true;
+            pending.push_back(pu);
+        }
+    }
+
+    while (!pending.empty()) {
+        const node pu = pending.back();
+        pending.pop_back();
+
+        // Still a singleton: anything that could have emptied this domain returns false at the
+        // erase below, before its owner is ever popped.
+        const node fixed = domains[pu].front();
+
+        for (node pw = 0; pw < z; ++pw) {
+            if (pw == pu || !pattern.hasNode(pw))
+                continue;
+
+            std::vector<node> &other = domains[pw];
+            const auto found = std::lower_bound(other.begin(), other.end(), fixed);
+            if (found == other.end() || *found != fixed)
+                continue;
+
+            // One id at a time, because these are the ascending vectors candidatesFor() merges
+            // against. The paper clears a whole bitmask in one word operation, but a bitmask
+            // cannot be walked as the sorted range the merge needs. One memmove per hit, and there
+            // is at most one hit per (singleton, other node) pair.
+            other.erase(found);
+
+            // Two pattern nodes forced onto the same target node land here, and the instance has
+            // no matches at all.
+            if (other.empty())
+                return false;
+
+            // The singleton this removal just created. Picking it up here is what "repeat this
+            // procedure for any newly introduced singleton domains" means; it is this loop
+            // continuing, not forward checking being applied a second time.
+            if (other.size() == 1 && !queued[pw]) {
+                queued[pw] = true;
+                pending.push_back(pw);
+            }
+        }
+    }
+
+    return true;
+}
+
 } // namespace
 
-RIImpl::Ordering RIImpl::computeOrdering(const SearchGraph &pattern, const SearchGraph &target,
-                                         const std::vector<index> &patternNodeLabels,
-                                         const std::vector<index> &targetNodeLabels,
-                                         RI::Variant variant) {
-    // RI's ordering looks at nothing but the pattern - that target-independence is the paper's
-    // central claim, and it is why ParallelRI can compute the order once and share it. The
-    // parameters stay because both drivers pass them and because they are where a future
-    // target-aware variant would plug in.
-    tlx::unused(target, patternNodeLabels, targetNodeLabels, variant);
+RIImpl::Ordering RIImpl::computeOrdering(const SearchGraph &pattern, const Domains &domains) {
+    // Plain RI's ordering looks at nothing but the pattern; RI-Ds reads the domain sizes on top,
+    // and nothing else about the target. Either way it is computed once and shared, because
+    // nothing it reads changes while the search runs.
 
     // ## The score, and the paper's errata
     //
@@ -252,12 +323,36 @@ RIImpl::Ordering RIImpl::computeOrdering(const SearchGraph &pattern, const Searc
         return score;
     };
 
+    // ## What RI-Ds adds on top: SI, and singletons first
+    //
+    // Under plain RI the domains are empty, so every node reports size 0 here: the singleton phase
+    // never engages and the tie-break clause below is never true. The order is then bit-for-bit
+    // what it was before this variant existed.
+    const auto domainSize = [&](node u) -> count {
+        return domains.ofPatternNode.empty() ? 0 : domains.ofPatternNode[u].size();
+    };
+
+    // Section 4.1 puts every singleton-domain node at the front of the order: its image is already
+    // decided, so mapping it first constrains every later position for free. This is a hard filter
+    // rather than another score term - nothing else may be appended while such a node is left
+    // unordered. Forward checking is what manufactures most of these, which is why the two land
+    // together.
+    count remainingSingletons = 0;
+    for (node u = 0; u < z; ++u)
+        if (pattern.hasNode(u) && domainSize(u) == 1)
+            ++remainingSingletons;
+
+    const auto eligible = [&](node u) {
+        return pattern.hasNode(u) && !inOrder[u]
+               && (remainingSingletons == 0 || domainSize(u) == 1);
+    };
+
     while (result.order.size() < total) {
         // Two passes, so the expensive V_neig is computed only for the candidates that are still
         // in the running after the cheap first term.
         count bestVis = 0;
         for (node u = 0; u < z; ++u)
-            if (pattern.hasNode(u) && !inOrder[u])
+            if (eligible(u))
                 bestVis = std::max(bestVis, visCount[u]);
 
         // Reset per iteration - erratum 2. Ascending ids with a strict comparison means a full tie
@@ -265,15 +360,26 @@ RIImpl::Ordering RIImpl::computeOrdering(const SearchGraph &pattern, const Searc
         node best = none;
         std::array<count, 3> bestScore{};
         for (node u = 0; u < z; ++u) {
-            if (!pattern.hasNode(u) || inOrder[u] || visCount[u] != bestVis)
+            if (!eligible(u) || visCount[u] != bestVis)
                 continue;
 
             const std::array<count, 3> score = tripleFor(u);
-            if (best == none || score > bestScore) {
+
+            // Section 4.2.1's domain-size tie-break (SI) slips in one level above the id tie-break,
+            // not into the triple: the paper calls RI's third term the degree, but Bonnici's - and
+            // this file's - is V_unv, so the domain is a *fourth* key. A tie on all three counts
+            // goes to the more constrained node; only a tie on the domain too goes by id.
+            if (best == none || score > bestScore
+                || (score == bestScore && domainSize(u) < domainSize(best))) {
                 best = u;
                 bestScore = score;
             }
         }
+
+        // Every iteration of the singleton phase consumes exactly one singleton, because `eligible`
+        // admitted nothing else.
+        if (remainingSingletons != 0)
+            --remainingSingletons;
 
         // visCount[best] == 0 is precisely the new-component case: no arc reaches back into the
         // order, so there is no parent to find and no point scanning for one. Two degenerate cases
@@ -317,17 +423,17 @@ bool RIImpl::patternCannotFit(const SearchGraph &pattern, const SearchGraph &tar
 RIImpl::RIImpl(const SearchGraph &pattern, const SearchGraph &target,
                const std::vector<index> &patternNodeLabels,
                const std::vector<index> &targetNodeLabels, const Ordering &ordering,
-               SubgraphIsomorphism::Semantics semantics, RI::Variant variant,
+               const Domains &domains, SubgraphIsomorphism::Semantics semantics,
                Aux::SignalHandler &handler, MatchReporter report)
     : patternGraph(&pattern), targetGraph(&target), patternNodeLabels(&patternNodeLabels),
       targetNodeLabels(&targetNodeLabels), nodeLabelled(!patternNodeLabels.empty()),
-      ordering(&ordering), semantics(semantics), variant(variant), handler(&handler),
+      ordering(&ordering), domains(&domains), semantics(semantics), handler(&handler),
       report(std::move(report)) {
 
-    // Both of these belong here rather than in run(), because ParallelRI builds one RIImpl per
-    // worker and those workers only ever call expand(). See the class documentation.
+    // Here rather than in run(), because ParallelRI builds one RIImpl per worker and those workers
+    // only ever call expand(). See the class documentation. The domains are not built here at all:
+    // the driver computed them before the order and every worker shares that one copy.
     matchBuffer.assign(pattern.upperNodeIdBound(), none);
-    initializeDomains();
 }
 
 void RIImpl::run() {
@@ -337,10 +443,10 @@ void RIImpl::run() {
         if (patternCannotFit(*patternGraph, *targetGraph))
             return;
 
-        // Under RI-Ds an empty domain means some pattern node has nowhere to go at all.
-        for (const std::vector<node> &domain : domains)
-            if (domain.empty())
-                return;
+        // Under RI-Ds an empty domain means some pattern node has nowhere to go at all. Decided
+        // once by computeDomains(), so ParallelRI gets the same bail-out from the same place.
+        if (domains->anyEmpty)
+            return;
     }
 
     State state;
@@ -426,7 +532,11 @@ void RIImpl::candidatesFor(const State &state, std::vector<node> &out) const {
     const index pos = state.depth;
     const node pu = ordering->order[pos];
     const index parentPos = ordering->parent[pos];
-    const std::vector<node> *builtDomain = domains.empty() ? nullptr : &domains[pos];
+
+    // Indexed by pattern node, and `pu` is already in a register, so RI-Ds costs nothing extra
+    // here that plain RI does not pay.
+    const std::vector<node> *builtDomain =
+        domains->ofPatternNode.empty() ? nullptr : &domains->ofPatternNode[pu];
 
     if (parentPos == none) {
         // This position starts a new connected component, so nothing structural constrains it.
@@ -449,7 +559,7 @@ void RIImpl::candidatesFor(const State &state, std::vector<node> &out) const {
     // On a slice, though, the domain has to earn its place: everything it rejects that the sweep
     // did not find is something consistent() rejects more cheaply than a binary search can.
     const std::vector<node> *domain =
-        builtDomain != nullptr && domainEarnsItsKeep[pos] ? builtDomain : nullptr;
+        builtDomain != nullptr && domains->earnsItsKeep[pu] ? builtDomain : nullptr;
 
     const node pp = ordering->order[parentPos];
     const node parentImage = state.mapping[parentPos];
@@ -591,26 +701,34 @@ bool RIImpl::ruleLabels(node pu, node tv) const {
     return nodeLabelsCompatible(*patternNodeLabels, *targetNodeLabels, pu, tv);
 }
 
-void RIImpl::initializeDomains() {
+RIImpl::Domains RIImpl::computeDomains(const SearchGraph &pattern, const SearchGraph &target,
+                                       const std::vector<index> &patternNodeLabels,
+                                       const std::vector<index> &targetNodeLabels,
+                                       RI::Variant variant) {
+    Domains result;
     if (variant != RI::Variant::RI_DS)
-        return;
+        return result;
 
-    const count positions = ordering->order.size();
-    domains.assign(positions, {});
-    domainEarnsItsKeep.assign(positions, false);
-    if (positions == 0)
-        return;
+    const count z = pattern.upperNodeIdBound();
+    if (z == 0)
+        return result;
+
+    // Indexed by pattern node id, not by position: the order is computed from these, so it does
+    // not exist yet. Ids that are not nodes keep an empty domain that nothing ever reads.
+    result.ofPatternNode.assign(z, {});
+    result.earnsItsKeep.assign(z, false);
 
     // ## Built once
     //
     // Walking target ids ascending leaves every domain sorted for free, which every consumer
     // relies on.
-    for (index i = 0; i < positions; ++i) {
-        const node pu = ordering->order[i];
-        std::vector<node> &domain = domains[i];
-        for (node tv = 0; tv < targetGraph->upperNodeIdBound(); ++tv)
-            if (couldMap(*patternGraph, *targetGraph, *patternNodeLabels, *targetNodeLabels, pu,
-                         tv))
+    for (node pu = 0; pu < z; ++pu) {
+        if (!pattern.hasNode(pu))
+            continue;
+
+        std::vector<node> &domain = result.ofPatternNode[pu];
+        for (node tv = 0; tv < target.upperNodeIdBound(); ++tv)
+            if (couldMap(pattern, target, patternNodeLabels, targetNodeLabels, pu, tv))
                 domain.push_back(tv);
     }
 
@@ -621,40 +739,45 @@ void RIImpl::initializeDomains() {
     // costly part of RI-Ds. It is pure pruning, so skipping it is always safe - which is what
     // makes gating it behind a size threshold an option if it ever fails to pay.
     //
-    // Iterating *positions* j rather than the pattern node's neighbours avoids a node-to-position
-    // reverse map. Refining in place is sound: a partly refined domain is still a superset of the
-    // images that position can take, since every removal took away a node that cannot be one.
-    for (index i = 0; i < positions; ++i) {
-        const node pu = ordering->order[i];
-        std::vector<node> &domain = domains[i];
-        const count built = domain.size();
+    // Refining in place is sound: a partly refined domain is still a superset of the images that
+    // pattern node can take, since every removal took away a node that cannot be one. Because the
+    // pass is single and refines in place, which domains it manages to shrink depends on the order
+    // it walks them in - and that order is now ascending node id rather than position in the
+    // matching order, which is what makes the result independent of an order that does not exist
+    // yet. Both walks are sound; they simply leave slightly different supersets.
+    std::vector<count> builtSize(z, 0);
+    for (node pu = 0; pu < z; ++pu) {
+        if (!pattern.hasNode(pu))
+            continue;
+
+        std::vector<node> &domain = result.ofPatternNode[pu];
+        builtSize[pu] = domain.size();
 
         const auto keep = [&](node tv) {
-            for (index j = 0; j < positions; ++j) {
-                if (j == i)
+            for (node pj = 0; pj < z; ++pj) {
+                if (pj == pu || !pattern.hasNode(pj))
                     continue;
 
-                const node pj = ordering->order[j];
-                const bool forward = patternGraph->hasEdge(pu, pj);
-                const bool backward = patternGraph->isDirected() && patternGraph->hasEdge(pj, pu);
+                const bool forward = pattern.hasEdge(pu, pj);
+                const bool backward = pattern.isDirected() && pattern.hasEdge(pj, pu);
                 if (!forward && !backward)
                     continue;
 
                 // Direction follows the pattern edge exactly as in candidatesFor(); with edge
                 // labels the required neighbourhood narrows to arcs carrying a compatible label.
                 if (forward) {
-                    const index label = patternGraph->edgeLabel(pu, pj);
-                    if (!intersectsDomain(targetGraph->outBegin(tv), targetGraph->outEnd(tv),
-                                          label == none ? nullptr : targetGraph->outLabelBegin(tv),
-                                          label, domains[j]))
+                    const index label = pattern.edgeLabel(pu, pj);
+                    if (!intersectsDomain(target.outBegin(tv), target.outEnd(tv),
+                                          label == none ? nullptr : target.outLabelBegin(tv), label,
+                                          result.ofPatternNode[pj]))
                         return false;
                 }
 
                 if (backward) {
-                    const index label = patternGraph->edgeLabel(pj, pu);
-                    if (!intersectsDomain(targetGraph->inBegin(tv), targetGraph->inEnd(tv),
-                                          label == none ? nullptr : targetGraph->inLabelBegin(tv),
-                                          label, domains[j]))
+                    const index label = pattern.edgeLabel(pj, pu);
+                    if (!intersectsDomain(target.inBegin(tv), target.inEnd(tv),
+                                          label == none ? nullptr : target.inLabelBegin(tv), label,
+                                          result.ofPatternNode[pj]))
                         return false;
                 }
             }
@@ -665,17 +788,37 @@ void RIImpl::initializeDomains() {
         domain.erase(
             std::remove_if(domain.begin(), domain.end(), [&](node tv) { return !keep(tv); }),
             domain.end());
+    }
 
-        // Measured against what the *build* left, not against the target: the build's own
-        // removals are duplicated for free by consistent()'s first two gates, so only the sweep's
-        // yield can pay for a binary search per candidate. See
-        // MinSweepYieldForSliceIntersection.
-        const count removedBySweep = built - domain.size();
-        domainEarnsItsKeep[i] =
+    // ## Forward checking, one step
+    //
+    // After the sweep, because it can only gain from the smaller domains the sweep leaves, and
+    // before the order, because a singleton it manufactures is what the singletons-first rule in
+    // computeOrdering() acts on. Called exactly once; its inner worklist is what handles the
+    // singletons its own removals create, and it does so before this one call returns.
+    result.anyEmpty = !forwardCheckSingletons(pattern, result.ofPatternNode);
+
+    // ## What the pruning was worth
+    //
+    // Measured against what the *build* left, not against the target: the build's own removals are
+    // duplicated for free by consistent()'s first two gates, so only what the sweep and the forward
+    // check removed can pay for a binary search per candidate. Forward checking counts because
+    // ruleEdgesToPrefix() enforces injectivity only against *already-mapped* positions, and so can
+    // never reproduce a removal justified by a node that will be mapped later. See
+    // MinSweepYieldForSliceIntersection.
+    for (node pu = 0; pu < z; ++pu) {
+        if (!pattern.hasNode(pu))
+            continue;
+
+        const count built = builtSize[pu];
+        const count pruned = built - result.ofPatternNode[pu].size();
+        result.earnsItsKeep[pu] =
             built != 0
-            && static_cast<double>(removedBySweep)
+            && static_cast<double>(pruned)
                    >= MinSweepYieldForSliceIntersection * static_cast<double>(built);
     }
+
+    return result;
 }
 
 bool RIImpl::reportMapping(const State &state) {
