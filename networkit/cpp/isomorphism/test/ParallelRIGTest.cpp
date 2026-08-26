@@ -101,7 +101,8 @@ count countOnly(Algo &&algo) {
 
 /**
  * Parameterised over the variant, exactly as RIGTest is, so RI-Ds gets the same parallel exercise
- * plain RI does - including the per-worker domain build, which only happens on this path.
+ * plain RI does - including the domains, which are built once by the driver and then read by every
+ * worker at the same time, a sharing pattern nothing on the sequential path exercises.
  *
  * A hung test here is a termination bug rather than a slow test: the failure mode of the token
  * ring is a worker that never notices the search is over, not a wrong answer.
@@ -194,6 +195,57 @@ TEST_P(ParallelRIGTest, testAnswerDoesNotDependOnWorkerCount) {
         sortMatches(actual);
         EXPECT_EQ(actual, expected) << "workers: " << workers;
         EXPECT_EQ(algo.numberOfMatches(), expected.size()) << "workers: " << workers;
+    }
+}
+
+/**
+ * The same question again, on the input shape RI-DS-SI-FC exists for: one pattern node whose
+ * domain has been narrowed to a single target node.
+ *
+ * Nothing else in either test file drives a singleton domain through the parallel path, and a
+ * singleton is what all three of the RI-Ds improvements turn on - it opens the matching order, it
+ * is what forward checking strikes out of every other domain, and it is the reason the order is no
+ * longer the one plain RI would produce. Since the whole preprocessing result is now built once
+ * and read concurrently by every worker, this is also the case where a worker reading a domain the
+ * driver got wrong would show up as a wrong answer rather than as a crash.
+ *
+ * The reference is sequential **plain RI**, not sequential RI-Ds: an independent search that has
+ * no domains at all, so agreement cannot come from both sides making the same mistake.
+ */
+TEST_P(ParallelRIGTest, testSingletonDomainAgreesAtEveryWorkerCount) {
+    constexpr node anchor = 0;
+    constexpr index rareLabel = 7;
+
+    const Graph target = karate();
+    const Graph pattern = path(4);
+
+    // Exactly one target node carries the rare label, and the pattern node that requires it is an
+    // endpoint - the position plain RI's degree-first rule would order last.
+    std::vector<index> targetNodeLabels(target.upperNodeIdBound(), 0);
+    targetNodeLabels[anchor] = rareLabel;
+    const std::vector<index> patternNodeLabels{none, none, none, rareLabel};
+
+    RI reference(pattern, target, RI::Variant::RI, Semantics::MONOMORPHISM, 0);
+    reference.setNodeLabels(patternNodeLabels, targetNodeLabels);
+    reference.run();
+    std::vector<Match> expected = reference.getMatches();
+    sortMatches(expected);
+    ASSERT_FALSE(expected.empty());
+
+    // Every match has to put the labelled pattern node on the one target node that can host it.
+    for (const Match &match : expected)
+        ASSERT_EQ(match[3], anchor);
+
+    for (const int workers : {1, 2, 4, 8, 16}) {
+        Aux::setNumberOfThreads(workers);
+
+        ParallelRI algo(pattern, target, GetParam(), Semantics::MONOMORPHISM, 0);
+        algo.setNodeLabels(patternNodeLabels, targetNodeLabels);
+        algo.run();
+
+        std::vector<Match> actual = algo.getMatches();
+        sortMatches(actual);
+        EXPECT_EQ(actual, expected) << "workers: " << workers;
     }
 }
 
