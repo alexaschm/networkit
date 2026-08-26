@@ -42,26 +42,37 @@ namespace NetworKit {
  * @ref Variant::RI_DS adds **domains**: before the search starts, it works out for each pattern
  * node which target nodes could host it at all - judged from labels and degrees, then narrowed
  * once by checking that each of the node's pattern neighbours still has somewhere to go across a
- * real target edge - and then uses those sets to shrink candidate lists during the search. The
- * order is the same as plain RI's; there is no domain-size tie-break. Nor is there any forward
- * checking or other per-step inference, because the paper measured that the extra pruning does not
- * pay for what it costs.
+ * real target edge - and then uses those sets both to choose the order and to shrink candidate
+ * lists during the search.
+ *
+ * Three things follow from having the domains. A pattern node whose domain has shrunk to a single
+ * target node is mapped **first**, ahead of everything else, because its image is already decided
+ * and fixing it constrains every later position for free. Since it can only go on that one node,
+ * injectivity forbids that node to every other pattern node, so **forward checking** strikes it
+ * out of all the other domains - which can shrink another domain to a single node in turn, and
+ * that cascade is followed to its end. And when two candidates tie on all three of the counts
+ * above, the one with the **smaller domain** is ordered first, which is the same most-constrained-
+ * first principle one level further down. All three happen once, before the search; nothing prunes
+ * a domain while the search is running, so a step stays as cheap as plain RI's.
  *
  * Only part of what a domain knows is new, though. Ruling a target node out on its degree or its
  * label is something the search already does for each candidate it looks at, at the cost of a
- * couple of integer compares; only the narrowing step finds anything those per-candidate rules
- * miss. So a domain is consulted for a candidate list drawn from a neighbourhood only when the
- * narrowing removed most of that domain, and is otherwise left aside as the more expensive way to
- * reach the same answer. What a domain always does is replace the scan over every node in the
- * target that a pattern node with no already-mapped neighbour would otherwise need - which is why
- * it helps most on a disconnected pattern.
+ * couple of integer compares; only the narrowing and the forward check find anything those
+ * per-candidate rules miss. So a domain is consulted for a candidate list drawn from a
+ * neighbourhood only when those two removed most of it, and is otherwise left aside as the more
+ * expensive way to reach the same answer. What a domain always does is replace the scan over every
+ * node in the target that a pattern node with no already-mapped neighbour would otherwise need -
+ * which is why it helps most on a disconnected pattern.
  *
- * Even so, building the domains costs a pass over the target per pattern node, and on the graphs
- * this has been measured against that pass is rarely repaid: on a long enumeration the two
- * variants land within about a percent of each other, and plain RI is ahead whenever the search is
- * short enough for the setup to show. @ref Variant::RI is therefore the default. Reach for RI_DS
- * when the pattern is disconnected, or when the labels are selective enough that the narrowing
- * step really bites.
+ * Even so, building the domains costs a pass over the target per pattern node, and on an
+ * unlabelled graph that pass is rarely repaid: on a long enumeration the two variants land within
+ * a percent or two of each other, and plain RI is ahead whenever the search is short enough for
+ * the setup to show. @ref Variant::RI is therefore still the default. Where RI_DS wins it wins by
+ * a lot: on a 192k-node target with a four-node path pattern whose end carries a label exactly one
+ * target node has, plain RI takes about eight seconds and RI-Ds about six hundredths of one,
+ * because the singleton anchors the whole search at its first position. Reach for it when the
+ * pattern is disconnected, or when the labels are selective enough that the narrowing really
+ * bites.
  *
  * ## When to use it
  *
@@ -90,7 +101,8 @@ namespace NetworKit {
  * A subgraph isomorphism algorithm and its application to biochemical data.
  * BMC Bioinformatics, 14(Suppl 7), S13.
  *
- * and, for the RI-DS variant and the sequential baseline of the parallel version,
+ * and, for the RI-DS variant with its two improvements - domain-size ordering and forward checking,
+ * which that paper calls RI-DS-SI-FC - and for the sequential baseline of the parallel version,
  *
  * Kimmig, R., Meyerhenke, H., & Strash, D. (2017).
  * Shared Memory Parallel Subgraph Enumeration.
@@ -106,9 +118,10 @@ public:
         /// Plain RI: order by the three-level score described above, and search with no
         /// bookkeeping at all. The default.
         RI,
-        /// RI-DS: the same order, plus per-node candidate domains computed once before the search.
-        /// Costs a pass over the target per pattern node, which pays for itself mainly on
-        /// disconnected patterns and on selectively labelled inputs.
+        /// RI-DS-SI-FC: per-node candidate domains computed once before the search, forward
+        /// checking over them, and an order that puts single-candidate nodes first and settles a
+        /// tie by domain size. Costs a pass over the target per pattern node, which pays for
+        /// itself mainly on disconnected patterns and on selectively labelled inputs.
         RI_DS
     };
 
