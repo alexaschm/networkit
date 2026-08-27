@@ -133,6 +133,55 @@ bool intersectsDomain(const node *begin, const node *end, const index *labels, i
 }
 
 /**
+ * One "the image of this pattern node has to reach that pattern node's domain" requirement.
+ *
+ * The RI-Ds refinement sweep asks the same question of every candidate in a domain, and the answer
+ * depends on the pattern node that owns the domain, never on the candidate. So the questions are
+ * collected once per pattern node and then replayed per candidate; see @ref
+ * collectArcConstraints().
+ */
+struct ArcConstraint {
+    /// Whose domain the candidate has to reach.
+    node pj;
+    /// The pattern arc's label, or @ref none when the pattern is unlabelled or the label is a
+    /// wildcard - in which case the target arcs are not filtered at all.
+    index label;
+    /// Whether to walk the candidate's out-slice (a pattern arc pu -> pj) or its in-slice (pj ->
+    /// pu).
+    bool outgoing;
+};
+
+/**
+ * Collect what the refinement sweep must check for every candidate in @a pu's domain.
+ *
+ * Read straight off the pattern's own slices, one entry per incident arc, which is what keeps the
+ * sweep proportional to `deg(pu)` rather than to the size of the pattern. A directed mutual pair
+ * contributes two entries, one per arc, because the two arcs are two edge ids and can carry
+ * different labels - the same reason @ref RIImpl::ruleEdgesToPrefix() checks both directions
+ * separately. An undirected snapshot has no in-slices of its own, so its neighbours are all
+ * reported as outgoing, exactly as `hasEdge()` sees them.
+ *
+ * Labels come from the slice rather than from `edgeLabel()`: a label sits at the same offset as its
+ * head, so this costs a pointer bump where the lookup would cost a binary search per arc.
+ *
+ * @param out Appended to, not cleared, so one buffer serves the whole sweep.
+ */
+void collectArcConstraints(const SearchGraph &pattern, node pu, std::vector<ArcConstraint> &out) {
+    const node *outBegin = pattern.outBegin(pu);
+    const index *outLabels = pattern.outLabelBegin(pu);
+    for (const node *it = outBegin; it != pattern.outEnd(pu); ++it)
+        out.push_back({*it, outLabels == nullptr ? none : outLabels[it - outBegin], true});
+
+    if (!pattern.isDirected())
+        return;
+
+    const node *inBegin = pattern.inBegin(pu);
+    const index *inLabels = pattern.inLabelBegin(pu);
+    for (const node *it = inBegin; it != pattern.inEnd(pu); ++it)
+        out.push_back({*it, inLabels == nullptr ? none : inLabels[it - inBegin], false});
+}
+
+/**
  * How much of a domain the refinement sweep has to remove before intersecting a target slice with
  * it is worth doing.
  *
@@ -757,6 +806,11 @@ RIImpl::Domains RIImpl::computeDomains(const SearchGraph &pattern, const SearchG
     // matching order, which is what makes the result independent of an order that does not exist
     // yet. Both walks are sound; they simply leave slightly different supersets.
     std::vector<count> builtSize(z, 0);
+
+    // Reused across pattern nodes, so the sweep allocates once for the whole pass rather than once
+    // per node.
+    std::vector<ArcConstraint> constraints;
+
     for (node pu = 0; pu < z; ++pu) {
         if (!pattern.hasNode(pu))
             continue;
@@ -764,33 +818,27 @@ RIImpl::Domains RIImpl::computeDomains(const SearchGraph &pattern, const SearchG
         std::vector<node> &domain = result.ofPatternNode[pu];
         builtSize[pu] = domain.size();
 
+        // Which domains a candidate has to reach, across which kind of arc, and under which edge
+        // label depends on `pu` alone - not on the candidate. So it is collected once here, before
+        // the candidates are walked. Reading it off the pattern's own slices is also what makes the
+        // cost proportional to pu's degree: asking hasEdge(pu, pj) for every pattern id instead
+        // would rediscover a handful of neighbours by rejecting all the rest, once per entry of a
+        // domain that on a large unlabelled target is nearly the whole node set.
+        constraints.clear();
+        collectArcConstraints(pattern, pu, constraints);
+
         const auto keep = [&](node tv) {
-            for (node pj = 0; pj < z; ++pj) {
-                if (pj == pu || !pattern.hasNode(pj))
-                    continue;
+            // Direction follows the pattern arc exactly as in candidatesFor(); with edge labels the
+            // required neighbourhood narrows to target arcs carrying a compatible label.
+            for (const ArcConstraint &arc : constraints) {
+                const node *begin = arc.outgoing ? target.outBegin(tv) : target.inBegin(tv);
+                const node *end = arc.outgoing ? target.outEnd(tv) : target.inEnd(tv);
+                const index *labels = arc.label == none ? nullptr
+                                                        : (arc.outgoing ? target.outLabelBegin(tv)
+                                                                        : target.inLabelBegin(tv));
 
-                const bool forward = pattern.hasEdge(pu, pj);
-                const bool backward = pattern.isDirected() && pattern.hasEdge(pj, pu);
-                if (!forward && !backward)
-                    continue;
-
-                // Direction follows the pattern edge exactly as in candidatesFor(); with edge
-                // labels the required neighbourhood narrows to arcs carrying a compatible label.
-                if (forward) {
-                    const index label = pattern.edgeLabel(pu, pj);
-                    if (!intersectsDomain(target.outBegin(tv), target.outEnd(tv),
-                                          label == none ? nullptr : target.outLabelBegin(tv), label,
-                                          result.ofPatternNode[pj]))
-                        return false;
-                }
-
-                if (backward) {
-                    const index label = pattern.edgeLabel(pj, pu);
-                    if (!intersectsDomain(target.inBegin(tv), target.inEnd(tv),
-                                          label == none ? nullptr : target.inLabelBegin(tv), label,
-                                          result.ofPatternNode[pj]))
-                        return false;
-                }
+                if (!intersectsDomain(begin, end, labels, arc.label, result.ofPatternNode[arc.pj]))
+                    return false;
             }
 
             return true;
