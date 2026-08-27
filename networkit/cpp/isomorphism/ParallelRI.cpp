@@ -2,8 +2,8 @@
 #include <atomic>
 #include <deque>
 #include <functional>
+#include <iterator>
 #include <random>
-#include <stdexcept>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -243,8 +243,8 @@ public:
 
         merged.reserve(total);
         for (Worker &worker : workers) {
-            for (Match &match : worker.buffer)
-                merged.push_back(std::move(match));
+            merged.insert(merged.end(), std::make_move_iterator(worker.buffer.begin()),
+                          std::make_move_iterator(worker.buffer.end()));
             worker.buffer.clear();
             worker.buffer.shrink_to_fit();
         }
@@ -341,8 +341,7 @@ private:
      * @param impl The seeding thread's own RIImpl, whose reporter is bound to that thread's slot.
      */
     void seedRoots(RIImpl &impl) {
-        RIImpl::State root;
-        root.mapping.assign(ordering->order.size(), none);
+        RIImpl::State root = impl.rootState();
 
         std::vector<RIImpl::State> roots;
         if (!impl.expand(root, roots)) {
@@ -664,31 +663,20 @@ void ParallelRI::run() {
     // numberOfWorkers() promised its caller cannot drift apart.
     const count numWorkers = numberOfWorkers();
 
-    // Built once and shared read-only by every worker.
-    const SearchGraph patternGraph(*pattern, /* buildMatrix = */ true, patternEdgeLabels);
-    const SearchGraph targetGraph(*target, /* buildMatrix = */ false, targetEdgeLabels);
-
-    // The same narrow refusal RI carries, and for the same reason: edge-label support arrives here
-    // through the shared RIImpl, but a collapsed run of parallel arcs with disagreeing labels has
-    // no single label left to match against. Raised before any worker starts, so no thread is left
-    // to unwind.
-    if (patternGraph.collapsedLabelledEdges() || targetGraph.collapsedLabelledEdges())
-        throw std::runtime_error("ParallelRI does not support parallel edges whose edge labels "
-                                 "disagree - see SubgraphIsomorphism::setEdgeLabels()");
-
-    // Built once, before the order, because under RI-Ds the order is computed from the domain
-    // sizes - and because one shared copy replaces the one every worker used to build for itself.
-    // Empty and free under plain RI.
-    const RIImpl::Domains domains = RIImpl::computeDomains(
-        patternGraph, targetGraph, patternNodeLabels, targetNodeLabels, variant);
-
-    const RIImpl::Ordering ordering = RIImpl::computeOrdering(patternGraph, domains);
+    // Built once here and then shared read-only by every worker - which is the whole point of
+    // hoisting the preparation out of RIImpl: one snapshot, one set of domains and one matching
+    // order replace the copy each worker would otherwise build for itself. The same function serves
+    // RI::run(), including the narrow refusal it carries for parallel arcs whose labels disagree,
+    // which is raised before any worker exists and so leaves no thread to unwind.
+    const IsomorphismDetails::RISearchSetup setup = IsomorphismDetails::prepareRISearch(
+        *pattern, *target, patternNodeLabels, targetNodeLabels, patternEdgeLabels, targetEdgeLabels,
+        variant, "ParallelRI");
 
     // The lambda is what gets the workers at the user's callback: they are not subclasses and so
     // cannot reach the protected invokeCallback() themselves, but run() can.
     ParallelRIImpl impl(
-        patternGraph, targetGraph, patternNodeLabels, targetNodeLabels, ordering, domains,
-        semantics, handler,
+        setup.patternGraph, setup.targetGraph, patternNodeLabels, targetNodeLabels, setup.ordering,
+        setup.domains, semantics, handler,
         [this](index tid, const Match &match) { return invokeCallback(tid, match); },
         storesMatches(), maxMatches, numWorkers);
     impl.run();

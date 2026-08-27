@@ -1,5 +1,7 @@
 #include <algorithm>
 #include <array>
+#include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -496,6 +498,12 @@ RIImpl::RIImpl(const SearchGraph &pattern, const SearchGraph &target,
     matchBuffer.assign(pattern.upperNodeIdBound(), none);
 }
 
+RIImpl::State RIImpl::rootState() const {
+    State state;
+    state.mapping.assign(ordering->order.size(), none);
+    return state;
+}
+
 void RIImpl::run() {
     // Guarded on a non-empty order throughout: an empty pattern has exactly one match - the empty
     // mapping - and must never be caught by a bail-out.
@@ -509,8 +517,7 @@ void RIImpl::run() {
             return;
     }
 
-    State state;
-    state.mapping.assign(ordering->order.size(), none);
+    State state = rootState();
     recurse(state);
 }
 
@@ -551,8 +558,11 @@ bool RIImpl::recurse(State &state) {
 bool RIImpl::expand(State &state, std::vector<State> &children) {
     const count full = ordering->order.size();
 
-    // A stolen state must be full width so that a child has room at its own position. Defensive
-    // because ParallelRIImpl::seedRoots() is not written yet and nothing else enforces it.
+    // A stolen state must be full width so that a child has room at its own position. Purely
+    // defensive: every state either came from rootState() or is a copy of one that did, so nothing
+    // reachable from the two drivers arrives short. It stays because the repair is a no-op when the
+    // width is already right, and because a State assembled by hand would otherwise write past its
+    // own end.
     if (state.mapping.size() < full)
         state.mapping.resize(full, none);
 
@@ -891,6 +901,41 @@ bool RIImpl::reportMapping(const State &state) {
     // writes the same set of positions and nothing stale survives. Ids that are not nodes keep the
     // `none` the constructor put there.
     return report(matchBuffer);
+}
+
+RISearchSetup prepareRISearch(const Graph &pattern, const Graph &target,
+                              const std::vector<index> &patternNodeLabels,
+                              const std::vector<index> &targetNodeLabels,
+                              const std::vector<index> &patternEdgeLabels,
+                              const std::vector<index> &targetEdgeLabels, RI::Variant variant,
+                              const std::string &algorithmName) {
+    // The pattern is small, so it can afford the adjacency matrix that makes hasEdge() constant
+    // time; the target cannot, and falls back to a binary search over its sorted neighbours.
+    SearchGraph patternGraph(pattern, /* buildMatrix = */ true, patternEdgeLabels);
+    SearchGraph targetGraph(target, /* buildMatrix = */ false, targetEdgeLabels);
+
+    // RI matches edge labels, so it refuses only what no snapshot can represent: parallel edges
+    // whose labels disagree, which the compaction has to collapse into one arc that cannot carry
+    // both. The compaction is what notices, and it runs here rather than in setEdgeLabels(), which
+    // is why the refusal is late. Parallel edges carrying the same label collapse losslessly and
+    // are not affected. Raised here, at the front of the preparation, so ParallelRI has no worker
+    // left to unwind.
+    if (patternGraph.collapsedLabelledEdges() || targetGraph.collapsedLabelledEdges())
+        throw std::runtime_error(algorithmName
+                                 + " does not support parallel edges whose edge labels disagree - "
+                                   "see SubgraphIsomorphism::setEdgeLabels()");
+
+    // The domains come first, because under RI-DS the order is computed from their sizes. Empty and
+    // free under plain RI. ParallelRI shares this one copy with every worker, which is what
+    // replaced one scan of the whole target per worker.
+    RIImpl::Domains domains = RIImpl::computeDomains(patternGraph, targetGraph, patternNodeLabels,
+                                                     targetNodeLabels, variant);
+
+    // Deciding the matching order is the expensive part of RI.
+    RIImpl::Ordering ordering = RIImpl::computeOrdering(patternGraph, domains);
+
+    return RISearchSetup{std::move(patternGraph), std::move(targetGraph), std::move(domains),
+                         std::move(ordering)};
 }
 
 } // namespace IsomorphismDetails

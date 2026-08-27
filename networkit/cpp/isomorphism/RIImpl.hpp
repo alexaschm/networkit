@@ -9,6 +9,7 @@
 // networkit/cpp/randomization/CurveballImpl.hpp and
 // networkit/cpp/centrality/GroupClosenessGrowShrinkImpl.hpp exist.
 
+#include <string>
 #include <vector>
 
 #include <networkit/Globals.hpp>
@@ -232,6 +233,17 @@ public:
            MatchReporter report);
 
     /**
+     * The empty mapping the search starts from, sized to the order.
+     *
+     * The width is the contract every other @ref State inherits: a state has one entry per position
+     * whether or not that position is filled yet, so whoever picks it up has room to write at its
+     * own position. Children are copies of their parent, so getting it right once here is what
+     * makes it right everywhere - and it is why both drivers start from this rather than sizing a
+     * State of their own.
+     */
+    State rootState() const;
+
+    /**
      * Run the entire search from the empty mapping. Used by @ref RI.
      *
      * Bails out at once on an input no match can survive - see @ref patternCannotFit(), and, under
@@ -255,7 +267,8 @@ public:
      * stealable work, and it is why run() recurses instead of being written on top of this.
      *
      * @param state In/out: the state to expand; its resume point is updated. Repaired to full
-     *        width first if it arrives short.
+     *        width first if it arrives short - defensively, since every state either comes from
+     *        @ref rootState() or is a copy of one that did.
      * @param children Out: the children produced. Appended to, not cleared.
      * @return false if the search must stop because the match cap was reached. The interrupt poll
      *         is not done here - that belongs to the worker loop.
@@ -385,6 +398,46 @@ private:
     /// reallocate. expand() never recurses and owns the whole buffer.
     mutable std::vector<node> candidateBuffer;
 };
+
+/**
+ * Everything an RI search needs built before it can start.
+ *
+ * @ref RI::run() and @ref ParallelRI::run() need exactly the same four things from the same inputs,
+ * and the sequence is not free: the domains have to exist before the ordering, because under RI-DS
+ * the ordering is read off the domain sizes. Building them here rather than once in each driver is
+ * what keeps that dependency in a single place, and what stops the sequential and the parallel
+ * search from quietly answering two different questions.
+ */
+struct RISearchSetup {
+    /// Built **with** the adjacency matrix: the pattern is small, so it can afford the memory that
+    /// makes hasEdge() constant time.
+    SearchGraph patternGraph;
+
+    /// Built **without** it - a bit per ordered pair of target ids does not fit - so hasEdge()
+    /// falls back to a binary search over the sorted neighbours.
+    SearchGraph targetGraph;
+
+    /// Empty, and free to compute, under plain RI.
+    RIImpl::Domains domains;
+
+    RIImpl::Ordering ordering;
+};
+
+/**
+ * Build the snapshots, the RI-DS domains and the matching order for one RI search.
+ *
+ * @param algorithmName Named in the refusal below, so a caller sees which of the two drivers turned
+ *        the input down.
+ * @throws std::runtime_error when collapsing parallel edges had to throw an edge label away, which
+ *         is the one input the snapshot cannot represent. Raised before the domains are computed
+ *         and, for ParallelRI, before any worker exists, so nothing is left half-built.
+ */
+RISearchSetup prepareRISearch(const Graph &pattern, const Graph &target,
+                              const std::vector<index> &patternNodeLabels,
+                              const std::vector<index> &targetNodeLabels,
+                              const std::vector<index> &patternEdgeLabels,
+                              const std::vector<index> &targetEdgeLabels, RI::Variant variant,
+                              const std::string &algorithmName);
 
 } // namespace IsomorphismDetails
 } // namespace NetworKit

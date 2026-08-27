@@ -1,10 +1,7 @@
-#include <stdexcept>
-
 #include <networkit/auxiliary/SignalHandling.hpp>
 #include <networkit/isomorphism/RI.hpp>
 
 #include "RIImpl.hpp"
-#include "SearchGraph.hpp"
 
 namespace NetworKit {
 
@@ -13,37 +10,23 @@ RI::RI(const Graph &pattern, const Graph &target, Variant variant, Semantics sem
     : SubgraphIsomorphism(pattern, target, semantics, maxMatches), variant(variant) {}
 
 void RI::run() {
+    using IsomorphismDetails::prepareRISearch;
     using IsomorphismDetails::RIImpl;
-    using IsomorphismDetails::SearchGraph;
+    using IsomorphismDetails::RISearchSetup;
 
     Aux::SignalHandler handler;
     prepareRun();
 
-    // The pattern is small, so it can afford the adjacency matrix that makes hasEdge() constant
-    // time; the target cannot, and falls back to a binary search over its sorted neighbours.
-    const SearchGraph patternGraph(*pattern, /* buildMatrix = */ true, patternEdgeLabels);
-    const SearchGraph targetGraph(*target, /* buildMatrix = */ false, targetEdgeLabels);
+    // The snapshots, the RI-DS domains and the matching order, built in the one sequence that
+    // works. Shared with ParallelRI::run() rather than repeated here, so the sequential and the
+    // parallel search cannot end up answering different questions.
+    const RISearchSetup setup =
+        prepareRISearch(*pattern, *target, patternNodeLabels, targetNodeLabels, patternEdgeLabels,
+                        targetEdgeLabels, variant, "RI");
 
-    // RI matches edge labels, so it refuses only what no snapshot can represent: parallel edges
-    // whose labels disagree, which the compaction has to collapse into one arc that cannot carry
-    // both. The compaction is what notices, and it runs here rather than in setEdgeLabels(), which
-    // is why the refusal is late. Parallel edges carrying the same label collapse losslessly and
-    // are not affected.
-    if (patternGraph.collapsedLabelledEdges() || targetGraph.collapsedLabelledEdges())
-        throw std::runtime_error("RI does not support parallel edges whose edge labels disagree - "
-                                 "see SubgraphIsomorphism::setEdgeLabels()");
-
-    // The domains come first, because under RI-Ds the order is computed from their sizes. Empty
-    // and free under plain RI. ParallelRI computes exactly the same two things once and shares
-    // them across its workers.
-    const RIImpl::Domains domains = RIImpl::computeDomains(
-        patternGraph, targetGraph, patternNodeLabels, targetNodeLabels, variant);
-
-    // Deciding the matching order is the expensive part of RI.
-    const RIImpl::Ordering ordering = RIImpl::computeOrdering(patternGraph, domains);
-
-    RIImpl(patternGraph, targetGraph, patternNodeLabels, targetNodeLabels, ordering, domains,
-           semantics, handler, [this](const Match &match) { return reportMatch(match); })
+    RIImpl(setup.patternGraph, setup.targetGraph, patternNodeLabels, targetNodeLabels,
+           setup.ordering, setup.domains, semantics, handler,
+           [this](const Match &match) { return reportMatch(match); })
         .run();
 
     // RIImpl may only poll isRunning(), so an interrupted search just returns. Without this, that
