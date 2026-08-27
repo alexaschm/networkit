@@ -158,7 +158,7 @@ SearchGraph::SearchGraph(const Graph &G, bool buildMatrix, const std::vector<ind
 
     buildCSR(G, edgeLabels);
     if (hasMatrix)
-        buildAdjacencyMatrix(G);
+        buildAdjacencyMatrix();
 }
 
 void SearchGraph::buildCSR(const Graph &G, const std::vector<index> &edgeLabels) {
@@ -242,19 +242,18 @@ void SearchGraph::buildCSR(const Graph &G, const std::vector<index> &edgeLabels)
     }
 }
 
-void SearchGraph::buildAdjacencyMatrix(const Graph &G) {
+void SearchGraph::buildAdjacencyMatrix() {
     matrixStride = tlx::div_ceil(z, 64);
     matrix.assign(static_cast<std::size_t>(z) * matrixStride, 0);
 
-    // Setting the same bit twice is harmless, so parallel edges need no handling here. Self-loops
-    // do need it: buildCSR() drops them, and the two hasEdge() backends have to agree.
-    G.forNodes([&](node u) {
-        G.forNeighborsOf(u, [&](node v) {
-            if (v == u)
-                return;
-            matrix[static_cast<std::size_t>(u) * matrixStride + v / 64] |= uint64_t{1} << (v % 64);
-        });
-    });
+    // Filled from the compacted CSR, not from `Graph`. Parallel edges and self-loops are already
+    // gone by the time this runs, so neither needs handling here - and, more to the point, neither
+    // *can* be handled differently than the CSR handled it, which is what the two hasEdge()
+    // backends agreeing depends on. A removed id has an empty slice and so contributes no bits.
+    for (node u = 0; u < z; ++u)
+        for (const node *it = outBegin(u); it != outEnd(u); ++it)
+            matrix[static_cast<std::size_t>(u) * matrixStride + *it / 64] |= uint64_t{1}
+                                                                             << (*it % 64);
 }
 
 } // namespace IsomorphismDetails

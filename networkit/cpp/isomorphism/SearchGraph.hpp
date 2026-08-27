@@ -310,13 +310,17 @@ private:
      * iff the edge u -> v exists. For an undirected graph both directions are set, so hasEdge()
      * never has to normalize the order of its arguments.
      *
-     * Skips self-loops, so that the matrix and the compacted CSR give the same answer for every
-     * pair - the two hasEdge() backends must not disagree.
+     * Reads the finished CSR rather than @a G, so it must run after @ref buildCSR(). That is what
+     * makes the two hasEdge() backends agree by construction: the slices have already had their
+     * self-loops dropped and their parallel edges collapsed, so there is nothing left here to
+     * normalize away, and no second walk of `Graph`'s adjacency to pay for. An undirected snapshot
+     * keeps both orientations of every edge in its out-slices, which is where "both directions are
+     * set" comes from.
      *
      * Whether the matrix is affordable at all is decided by the constructor.
      *
      */
-    void buildAdjacencyMatrix(const Graph &G);
+    void buildAdjacencyMatrix();
 
     /// CSR out-edges. outHead[outFirst[u] .. outFirst[u + 1]) are the out-neighbours of u.
     std::vector<index> outFirst;
