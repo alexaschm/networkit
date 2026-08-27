@@ -96,9 +96,18 @@ public:
 #pragma omp parallel num_threads(static_cast<int>(numWorkers))
         {
             const index tid = static_cast<index>(omp_get_thread_num());
+
+            // The stride is the team OpenMP actually gave, not the one that was asked for.
+            // num_threads is an upper bound, so a runtime that hands back fewer threads than
+            // requested is legal - and striding by the request would then step over the matches
+            // belonging to the threads that never started, losing them silently. `slots` is sized
+            // by the request, which is at least the team, so indexing it by tid stays safe.
+            // ParallelRIImpl makes the same distinction, under the name activeWorkers.
+            const count team = static_cast<count>(omp_get_num_threads());
+
             Slot &slot = slots[tid];
             // Deal the matches round-robin so every worker reports, and reports interleaved.
-            for (index i = tid; i < all.size(); i += numWorkers) {
+            for (index i = tid; i < all.size(); i += team) {
                 // Non-throwing inside the region; the throw happens once after the join.
                 if (!handler.isRunning())
                     break;

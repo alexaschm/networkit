@@ -64,8 +64,11 @@ namespace NetworKit {
  * matches out of a parallel search, you almost certainly want the second one.
  *
  * @note With a callback *and* a match limit, a few matches beyond the limit may be delivered
- * before every worker notices that the limit was reached. Stored results and
- * @ref numberOfMatches() are unaffected; they are always trimmed to the limit exactly.
+ * before every worker notices that the limit was reached, and @ref numberOfMatches() then counts
+ * every one of them - so it can come back slightly above the limit. That is deliberate: the extra
+ * matches really were handed to the callback and a search cannot take them back, so the count says
+ * what happened rather than what was asked for. Without a callback nothing has left the algorithm
+ * yet, and both the stored matches and @ref numberOfMatches() are trimmed to the limit exactly.
  *
  * The search polls `Aux::SignalHandler` regularly, so a long enumeration can be stopped with
  * CTRL+C.

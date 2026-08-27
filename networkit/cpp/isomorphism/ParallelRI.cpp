@@ -103,8 +103,16 @@ private:
  * is not. So "private" is made literally true by splitting the queue in two.
  *
  * - `Worker::states` is touched by nobody but its owner, ever, and needs no atomic of any kind.
- *   The owner pushes and pops at the **back**, so the walk is depth-first and the queue stays
- *   proportional to the pattern's depth rather than to the size of the frontier.
+ *   The owner pushes and pops at the **back**, so the walk is depth-first: a child is expanded
+ *   before its siblings, and the queue therefore holds at most one level's children per level
+ *   below the root, rather than the whole breadth-first frontier. That is *not* the same as
+ *   "proportional to the pattern's depth", and the difference matters on one shape in particular:
+ *   @ref RIImpl::expand() produces **every** child of a state in one call, so a position with no
+ *   parent - the first position, and any position that starts a new component of a disconnected
+ *   pattern - hands over one State per existing target node at once. On a large target that is a
+ *   queue of `n` full-width mappings. Bounding it would mean taking a state's children in chunks,
+ *   which `RIImpl::State::nextCandidate` already allows for and which @ref workerLoop() does not
+ *   use today - see the note there.
  * - `Worker::stealable` holds the batches the owner has published, and is the only thing the
  *   `Worker::busy` flag protects. A thief takes from its **front** - the oldest and therefore
  *   shallowest state on offer, which is the one with the most search tree hanging off it - so one
@@ -196,11 +204,18 @@ public:
 
 #pragma omp single
             {
-                // OpenMP may give a smaller team than asked for, and never a larger one. Everything
-                // that has to agree on how many workers there really are reads this, never
-                // numWorkers: seeding a queue nobody drains would hang the token ring on a worker
-                // that does not exist. The min() only guards against a runtime that broke the
-                // "never larger" promise, which would otherwise index past `workers`.
+                // OpenMP may give a smaller team than asked for, and never a larger one - the
+                // num_threads clause is an upper bound, which is the whole reason `workers` can be
+                // sized once, up front. Everything that has to agree on how many workers there
+                // really are reads this, never numWorkers: seeding a queue nobody drains would
+                // hang the token ring on a worker that does not exist.
+                //
+                // The min() clamps the *ring*, and only that. It does not protect the
+                // `workers[tid]` indexing in recordMatch(), popLocal() and pushLocal(), which uses
+                // the raw thread number: a runtime that broke the "never larger" promise would run
+                // past the end of the vector there whatever this line said. Making that safe would
+                // mean sizing `workers` from the team, which cannot be done before the region
+                // opens. It is the OpenMP contract that holds it up, not this clamp.
                 activeWorkers.store(
                     std::min<count>(static_cast<count>(omp_get_num_threads()), numWorkers));
                 seedRoots(impl);
@@ -248,7 +263,8 @@ private:
     /// One worker's private state. Padded so two workers never share a cache line.
     struct alignas(64) Worker {
         /// Partial mappings only this worker may touch. Pushed and popped at the back, so the walk
-        /// is depth-first and the queue stays proportional to the pattern's depth.
+        /// is depth-first: at most one expansion's worth of children per level, not the whole
+        /// frontier. One expansion can still be large - see the class documentation.
         std::deque<RIImpl::State> states;
         /// The oldest states, published for stealing. Everything here is behind `busy`.
         std::deque<RIImpl::State> stealable;
@@ -350,6 +366,15 @@ private:
      * Take a state - my own if I have one, somebody else's if I have not - expand it by one level,
      * push the children back, repeat. With nothing left to take, say so by moving the termination
      * token on, and stop once it has been all the way round with nobody having found work.
+     *
+     * Note what this does *not* do with @ref RIImpl::State::nextCandidate. Every state reaching
+     * @ref RIImpl::expand() here arrives with that field at 0 and is dropped as soon as expand()
+     * returns, so the resume point is written and never read: this loop always takes a state's
+     * whole child list in one call. That is what makes an expansion of a parentless position hand
+     * over one State per target node at once, which the class documentation calls out as the
+     * queue's worst case. Feeding a state back onto the queue with its resume point advanced,
+     * instead of draining it, is the change that would bound the queue - `expand()` already
+     * supports it, and it is the reason the field exists.
      */
     void workerLoop(index tid, RIImpl &impl) {
         RIImpl::State state;
@@ -469,11 +494,17 @@ private:
      * goes into the termination protocol.
      */
     bool trySteal(index thief, RIImpl::State &out) {
-        if (activeWorkers.load() < 2)
+        // Read once and handed to pickVictim(), rather than read again in there. The draw's range
+        // is `active - 2` in unsigned arithmetic, so an `active` below 2 would not give a small
+        // range but a colossal one, and the index it produced would run straight off `workers`.
+        // Passing the value that was just checked is what makes that impossible to reintroduce by
+        // deleting a guard somewhere else.
+        const count active = activeWorkers.load();
+        if (active < 2)
             return false;
 
         for (count attempt = 0; attempt < StealAttempts; ++attempt) {
-            Worker &victim = workers[pickVictim(thief)];
+            Worker &victim = workers[pickVictim(thief, active)];
 
             // Two cheap rejections before the expensive one. Both are loads on a line this thief
             // never writes to.
@@ -505,11 +536,15 @@ private:
      * Choose whom to steal from: a uniformly random worker other than @a thief.
      *
      * Random choice is what keeps the load balanced without anybody having to track who is busy.
+     *
+     * @param thief The worker asking; never returned.
+     * @param active How many workers there are. Must be at least 2 - with fewer there is no other
+     *        worker to name, and the range below would underflow. @ref trySteal() is the only
+     *        caller and checks exactly that before passing the value on.
      */
-    index pickVictim(index thief) {
+    index pickVictim(index thief, count active) const {
         // Thread-local already, so no seeding, no shared generator and no per-worker field.
         auto &urng = Aux::Random::getURNG();
-        const count active = activeWorkers.load();
 
         // Drawn from a range one short and shifted past myself, so every other worker is equally
         // likely and no draw is ever thrown away.

@@ -87,12 +87,16 @@ namespace NetworKit {
  * | Class          | Use it when                                                              |
  * | -------------- | ------------------------------------------------------------------------ |
  * | @ref VF2       | Small inputs, or as the reference to check the others against.            |
- * | @ref VF3       | Large or dense targets, especially with labels.                           |
+ * | @ref VF3       | **Not implemented yet** - @ref VF3::run() throws. See its documentation.  |
  * | @ref RI        | Sparse targets and biological networks; usually the fastest sequentially. |
  * | @ref ParallelRI| Same as RI, but you have cores to spare and the search is long.           |
  *
- * All four return exactly the same set of matches. They differ only in how fast they get there,
- * and @ref ParallelRI additionally does not promise any particular order.
+ * Every algorithm that is implemented returns exactly the same set of matches. They differ only in
+ * how fast they get there, and @ref ParallelRI additionally does not promise any particular order.
+ * @ref VF3 is the exception, and only because its search is still unwritten: the class, the
+ * documentation and the input validation are in place, but @ref VF3::run() throws a
+ * `std::logic_error` rather than searching. Nothing here is planned differently for it - when it
+ * lands it will answer exactly what the other three do.
  *
  * ## Things that quietly do not apply
  *
@@ -360,7 +364,10 @@ public:
      * If a cap was requested, this is capped too and is therefore not the total number of matches
      * in the graph. The cap is exact, with one exception: a parallel search that streams to a
      * callback may have handed over a small bounded number of extra matches before every worker
-     * noticed that the cap had been reached.
+     * noticed that the cap had been reached, and this then **counts those too**, so it can come
+     * back slightly above the cap. Nothing is trimmed on that path on purpose - the matches really
+     * were delivered, and a count that hid them would disagree with what the callback saw. Every
+     * other combination is exact.
      *
      * @return the number of matches reported.
      */

@@ -11,6 +11,13 @@ namespace NetworKit {
  * @ingroup isomorphism
  * Finds every occurrence of a pattern graph inside a target graph, using the VF3 algorithm.
  *
+ * @warning **The search is not implemented yet.** @ref run() throws a `std::logic_error` on every
+ * input it does not reject earlier. Everything around the search is in place - the constructor,
+ * the input validation and the edge-label refusal all behave exactly as the other algorithms' do -
+ * so this class is usable as a specification and not as an algorithm. Use @ref RI or @ref VF2
+ * until the search lands. The rest of this documentation describes what VF3 *will* do, and is
+ * written down now because the shape of the search is what the unwritten pieces have to fit.
+ *
  * See @ref SubgraphIsomorphism for what "occurrence" means, how to use the class, and how to
  * choose between the four algorithms in this module.
  *
@@ -78,6 +85,9 @@ public:
     /**
      * Run the search. Retrieve the results with @ref getMatches(), @ref numberOfMatches() or
      * @ref hasMatch().
+     *
+     * @warning Not implemented. Throws `std::runtime_error` if @ref setEdgeLabels() was used, and
+     * `std::logic_error` otherwise. See the class documentation.
      */
     void run() override;
 };

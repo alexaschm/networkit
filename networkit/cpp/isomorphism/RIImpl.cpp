@@ -376,6 +376,17 @@ RIImpl::Ordering RIImpl::computeOrdering(const SearchGraph &pattern, const Domai
             }
         }
 
+        // Unreachable, and here so that it stays that way. Everything below indexes by `best`, so
+        // a `none` would read and then write far past the end of every array in this function. The
+        // reason it cannot happen is a two-part invariant that is easy to break from a distance:
+        // `bestVis` is a maximum over exactly the nodes `eligible` admits, so some eligible node
+        // always matches it; and `remainingSingletons` counts the *unordered* singletons, which
+        // holds because the singleton phase admits nothing else and so consumes exactly one per
+        // iteration. Break either half - a new filter in `eligible`, a domain that changes under
+        // us - and this stops silently corrupting memory and says so instead.
+        if (best == none)
+            break;
+
         // Every iteration of the singleton phase consumes exactly one singleton, because `eligible`
         // admitted nothing else.
         if (remainingSingletons != 0)
