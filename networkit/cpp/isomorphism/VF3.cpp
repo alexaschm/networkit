@@ -21,7 +21,9 @@ using IsomorphismDetails::SearchGraph;
  * The actual VF3 search.
  *
  * Same arrangement as VF2Impl in VF2.cpp: it lives here so the public header stays free of search
- * state, and it is created and destroyed inside VF3::run().
+ * state, and it is meant to be created and destroyed inside VF3::run(). While the search is a
+ * scaffold, VF3::run() throws before constructing one rather than paying for the snapshots the
+ * constructor builds; the call it will go back to is written out there.
  *
  * ## The state, in words
  *
@@ -292,17 +294,25 @@ VF3::VF3(const Graph &pattern, const Graph &target, Semantics semantics, count m
 void VF3::run() {
     // Ahead of need, and deliberately so: VF3Impl is unwritten, so nothing can be silently wrong
     // today, but having the refusal in place first means whoever writes the search inherits a
-    // defined answer rather than a gap. Same reasoning as VF2's - see there.
+    // defined answer rather than a gap. Same reasoning as VF2's - see there. It comes before the
+    // "not implemented" throw below because refusing an input the algorithm will never honour is a
+    // different answer from not having the algorithm, and the tests distinguish the two.
     if (isEdgeLabelled())
         throw std::runtime_error("VF3 does not support edge labels - see "
                                  "SubgraphIsomorphism::setEdgeLabels()");
 
-    Aux::SignalHandler handler;
     prepareRun();
-    VF3Impl(*pattern, *target, patternNodeLabels, targetNodeLabels, semantics, handler,
-            [this](const Match &match) { return reportMatch(match); })
-        .run();
-    finishRun();
+
+    // Constructing VF3Impl would build both SearchGraph snapshots first - a full CSR pass over the
+    // target, sorted and compacted - only to reach the very same throw from VF3Impl::run(). Since
+    // the refusal is the same for every input, it costs nothing to give it here instead. Restoring
+    // the two lines below is step zero of implementing the search:
+    //
+    //     Aux::SignalHandler handler;
+    //     VF3Impl(*pattern, *target, patternNodeLabels, targetNodeLabels, semantics, handler,
+    //             [this](const Match &match) { return reportMatch(match); }).run();
+    //     finishRun();
+    throw std::logic_error("VF3 is not implemented yet - see VF3Impl in VF3.cpp");
 }
 
 } // namespace NetworKit
