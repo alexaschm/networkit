@@ -28,6 +28,15 @@ using IsomorphismDetails::SearchGraph;
  * fix: Use a vector to store depth stamps of pair pu, tv before removing them from all terminal
  * sets in addPair(pu,tv)
  *
+ * MK: Valid concern, use a vector v (probably two -- for target and pattern)
+ * to store what nodes you added into the terminal set on the depth d. Then remove those
+ * that are from the end of the vector. Precalculate the vector pre-allocation size, if
+ * the calculation is chaep.
+ *   It will also automatically fix the issue with depth=0 and non-present node,
+ * bacuse you do not need to store the depths in the in1/out1 etc., only 0/1
+ * to store present (may be unordered_set would be more suitable), and solely the
+ * vector (actually stack) v is enough for removePair.
+ *
  * depth parameter in nextCandidatePair() is never used. If both in1 and in2 or both out1 and out2
  * are nonempty, in nextCandidatePair() we pair the smallest node in the first set with every node
  * in the second set. Could/should we use the depth parameter anywhere?
