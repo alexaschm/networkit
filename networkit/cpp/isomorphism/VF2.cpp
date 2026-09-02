@@ -71,13 +71,24 @@ public:
      * @param report Where complete mappings are reported.
      */
     VF2Impl(const Graph &pattern, const Graph &target, const std::vector<index> &patternNodeLabels,
-            const std::vector<index> &targetNodeLabels, SubgraphIsomorphism::Semantics semantics,
+            const std::vector<index> &targetNodeLabels, const std::vector<index> &patternEdgeLabels,
+            const std::vector<index> &targetEdgeLabels, SubgraphIsomorphism::Semantics semantics,
             Aux::SignalHandler &handler, MatchReporter report)
-        : patternGraph(pattern, /* buildMatrix = */ true),
-          targetGraph(target, /* buildMatrix = */ false), patternNodeLabels(&patternNodeLabels),
-          targetNodeLabels(&targetNodeLabels), nodeLabelled(!patternNodeLabels.empty()),
+        : patternGraph(pattern, /* buildMatrix = */ true, patternEdgeLabels),
+          targetGraph(target, /* buildMatrix = */ false, targetEdgeLabels), patternNodeLabels(&patternNodeLabels),
+          targetNodeLabels(&targetNodeLabels), nodeLabelled(!patternNodeLabels.empty()), edgeLabelled(!patternEdgeLabels.empty()),
           semantics(semantics), handler(&handler), report(std::move(report)), t1in(0), t1out(0),
-          t2in(0), t2out(0) {}
+          t2in(0), t2out(0) {
+            if (patternGraph.collapsedLabelledEdges())
+            {
+                throw std::runtime_error("VF2 does not run if pattern has unequally-labelled collapsed edges.");
+            }
+            if (targetGraph.collapsedLabelledEdges())
+            {
+                throw std::runtime_error("VF2 does not run if target has unequally-labelled collapsed edges.");
+            }
+            
+          }
 
     /**
      * Search for every match and report each one. Initialize core1/core2 and in1/out1/in2/out2.
@@ -242,6 +253,13 @@ private:
                 if (!targetGraph.hasEdge(tv, core1[u])) {
                     return false;
                 }
+                if (edgeLabelled)
+                {
+                    if (!(patternGraph.edgeLabel(pu, u) == targetGraph.edgeLabel(tv, core1[u]) || patternGraph.edgeLabel(pu, u) == none || targetGraph.edgeLabel(tv, core1[u]) == none))
+                    {
+                        return false;
+                    }
+                }
             }
         }
 
@@ -253,6 +271,13 @@ private:
                 if (core2[v] != none) {
                     if (!patternGraph.hasEdge(pu, core2[v])) {
                         return false;
+                    }
+                    if (edgeLabelled)
+                    {
+                        if (!(patternGraph.edgeLabel(tv, v) == targetGraph.edgeLabel(pu, core2[v]) || patternGraph.edgeLabel(tv, v) == none || targetGraph.edgeLabel(pu, core2[v]) == none))
+                        {
+                            return false;
+                        }
                     }
                 }
             }
@@ -280,6 +305,13 @@ private:
                 if (!targetGraph.hasEdge(core1[u], tv)) {
                     return false;
                 }
+                if (edgeLabelled)
+                {
+                    if (!(patternGraph.edgeLabel(u, pu) == targetGraph.edgeLabel(core1[u], tv) || patternGraph.edgeLabel(u, pu) == none || targetGraph.edgeLabel(core1[u], tv) == none))
+                    {
+                        return false;
+                    }
+                }
             }
         }
 
@@ -291,6 +323,13 @@ private:
                 if (core2[v] != none) {
                     if (!patternGraph.hasEdge(core2[v], pu)) {
                         return false;
+                    }
+                    if (edgeLabelled)
+                    {
+                    if (!(patternGraph.edgeLabel(v, tv) == targetGraph.edgeLabel(core2[v], pu) || patternGraph.edgeLabel(v, tv) == none || targetGraph.edgeLabel(core2[v], pu) == none))
+                        {
+                            return false;
+                        }
                     }
                 }
             }
@@ -584,6 +623,7 @@ private:
     const std::vector<index> *patternNodeLabels;
     const std::vector<index> *targetNodeLabels;
     bool nodeLabelled;
+    bool edgeLabelled;
 
     SubgraphIsomorphism::Semantics semantics;
 
@@ -619,13 +659,9 @@ void VF2::run() {
     // Refusing is the honest answer. Teaching the search to honour edge labels is later work and
     // belongs in ruleSuccessors/rulePredecessors, where the mapped neighbour's edge is already in
     // hand - see the TODO at the top of this file.
-    if (isEdgeLabelled())
-        throw std::runtime_error("VF2 does not support edge labels - see "
-                                 "SubgraphIsomorphism::setEdgeLabels()");
-
     Aux::SignalHandler handler;
     prepareRun();
-    VF2Impl(*pattern, *target, patternNodeLabels, targetNodeLabels, semantics, handler,
+    VF2Impl(*pattern, *target, patternNodeLabels, targetNodeLabels, patternEdgeLabels, targetEdgeLabels, semantics, handler,
             [this](const Match &match) { return reportMatch(match); })
         .run();
     finishRun();
