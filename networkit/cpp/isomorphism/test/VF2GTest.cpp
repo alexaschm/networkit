@@ -55,7 +55,7 @@ TEST_F(VF2GTest, dummyTest) {
 
 TEST_F(VF2GTest, testExceptionWhenBadlyCollapsed) {
 
-    // Pattern badly collapsed
+    // Target badly collapsed
     Graph pattern = Graph(2, false, false, true);
     Graph target = Graph(2, false, false, true);
 
@@ -107,7 +107,7 @@ TEST_F(VF2GTest, testExceptionWhenBadlyCollapsed) {
         EXPECT_STREQ(e.what(),"VF2 does not run if pattern has unequally-labelled collapsed edges.");
     }
 
-    // Pattern collapsed, but only equally labelled edges
+    // Target validly collapsed, only equally labelled edges
     Graph pattern3 = Graph(2, false, false, true);
     Graph target3 = Graph(2, false, false, true);
 
@@ -127,7 +127,7 @@ TEST_F(VF2GTest, testExceptionWhenBadlyCollapsed) {
     vf3.setEdgeLabels(patternLabels3, targetLabels3);
     EXPECT_NO_THROW(vf3.run());
 
-    // Target collapsed, but only eqally labelled edges
+    // Pattern validly collapsed, only eqally labelled edges
     Graph pattern4 = Graph(2, false, false, true);
     Graph target4 = Graph(3, false, false, true);
 
@@ -149,7 +149,7 @@ TEST_F(VF2GTest, testExceptionWhenBadlyCollapsed) {
     vf4.setEdgeLabels(patternLabels4, targetLabels4);
     EXPECT_NO_THROW(vf4.run());
 
-    // Target collapsed, but only unequally labelled self loops
+    // Target validly collapsed, only unequally labelled self loops
     Graph pattern5 = Graph(2, false, false, true);
     Graph target5 = Graph(2, false, false, true);
 
