@@ -98,8 +98,7 @@ bool compactSlices(std::vector<index> &first, std::vector<node> &head, std::vect
             if (v == previous) {
                 // Equal heads are adjacent after the sort, so the label this one is being dropped
                 // in favour of is simply the one just written.
-                if (labelled && label[i] != label[write - 1])
-                {
+                if (labelled && label[i] != label[write - 1]) {
                     std::cout << "A label was lost" << std::endl;
                     lost = true;
                 }

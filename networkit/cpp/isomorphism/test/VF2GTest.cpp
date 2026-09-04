@@ -77,7 +77,8 @@ TEST_F(VF2GTest, testExceptionWhenBadlyCollapsed) {
         vf.run();
         FAIL() << "Expected std::runtime_error";
     } catch (const std::runtime_error &e) {
-        EXPECT_STREQ(e.what(),"VF2 does not run if target has unequally-labelled collapsed edges.");
+        EXPECT_STREQ(e.what(),
+                     "VF2 does not run if target has unequally-labelled collapsed edges.");
     }
 
     // Pattern badly collapsed
@@ -104,7 +105,8 @@ TEST_F(VF2GTest, testExceptionWhenBadlyCollapsed) {
         vf2.run();
         FAIL() << "Expected std::runtime_error";
     } catch (const std::runtime_error &e) {
-        EXPECT_STREQ(e.what(),"VF2 does not run if pattern has unequally-labelled collapsed edges.");
+        EXPECT_STREQ(e.what(),
+                     "VF2 does not run if pattern has unequally-labelled collapsed edges.");
     }
 
     // Target validly collapsed, only equally labelled edges
@@ -176,8 +178,10 @@ TEST_F(VF2GTest, testEdgeLabelMatchingSanityCheck) {
 
     // Test single edge undirected case, once with matching edge labels and once without
     IsomorphismTest::LabelledGraph ptrnUndir = IsomorphismTest::labelledGraphOf(2, {{0, 1, 0}});
-    IsomorphismTest::LabelledGraph trgtMatchedUndir = IsomorphismTest::labelledGraphOf(2, {{0, 1, 0}});
-    IsomorphismTest::LabelledGraph trgtMismatchedUndir = IsomorphismTest::labelledGraphOf(2, {{0, 1, 1}});
+    IsomorphismTest::LabelledGraph trgtMatchedUndir =
+        IsomorphismTest::labelledGraphOf(2, {{0, 1, 0}});
+    IsomorphismTest::LabelledGraph trgtMismatchedUndir =
+        IsomorphismTest::labelledGraphOf(2, {{0, 1, 1}});
 
     VF2 vfMatchedUndir = VF2(ptrnUndir.G, trgtMatchedUndir.G);
     vfMatchedUndir.setEdgeLabels(ptrnUndir.edgeLabels, trgtMatchedUndir.edgeLabels);
@@ -195,8 +199,10 @@ TEST_F(VF2GTest, testEdgeLabelMatchingSanityCheck) {
 
     // Test single edge directed case, once with matching edge labels and once without
     IsomorphismTest::LabelledGraph ptrnDir = IsomorphismTest::labelledGraphOf(2, {{0, 1, 0}}, true);
-    IsomorphismTest::LabelledGraph trgtMatchedDir = IsomorphismTest::labelledGraphOf(2, {{0, 1, 0}}, true);
-    IsomorphismTest::LabelledGraph trgtMismatchedDir = IsomorphismTest::labelledGraphOf(2, {{0, 1, 1}}, true);
+    IsomorphismTest::LabelledGraph trgtMatchedDir =
+        IsomorphismTest::labelledGraphOf(2, {{0, 1, 0}}, true);
+    IsomorphismTest::LabelledGraph trgtMismatchedDir =
+        IsomorphismTest::labelledGraphOf(2, {{0, 1, 1}}, true);
 
     VF2 vfMatchedDir = VF2(ptrnDir.G, trgtMatchedDir.G);
     vfMatchedDir.setEdgeLabels(ptrnDir.edgeLabels, trgtMatchedDir.edgeLabels);
@@ -212,7 +218,8 @@ TEST_F(VF2GTest, testEdgeLabelMatchingSanityCheck) {
 
     EXPECT_FALSE(vfMismatchedDir.hasMatch());
 
-    // Test single edge undirected case with matching edge labels, node labels only allow one way orientation
+    // Test single edge undirected case with matching edge labels, node labels only allow one way
+    // orientation
     IsomorphismTest::LabelledGraph ptrn1 = IsomorphismTest::labelledGraphOf(2, {{0, 1, 0}});
     IsomorphismTest::LabelledGraph trgt1 = IsomorphismTest::labelledGraphOf(2, {{0, 1, 0}});
 
@@ -227,8 +234,10 @@ TEST_F(VF2GTest, testEdgeLabelMatchingSanityCheck) {
 
     // Test edge matching for square pattern with square containing diagonal line target
 
-    IsomorphismTest::LabelledGraph ptrn2 = IsomorphismTest::labelledGraphOf(4, {{0, 1, 0}, {1, 2, 42}, {2, 3, 0}, {3, 0, 42}});
-    IsomorphismTest::LabelledGraph trgt2 = IsomorphismTest::labelledGraphOf(4, {{0, 1, 42}, {1, 2, 0}, {2, 3, 42}, {3, 0, 0}, {0, 2, 42}});
+    IsomorphismTest::LabelledGraph ptrn2 =
+        IsomorphismTest::labelledGraphOf(4, {{0, 1, 0}, {1, 2, 42}, {2, 3, 0}, {3, 0, 42}});
+    IsomorphismTest::LabelledGraph trgt2 = IsomorphismTest::labelledGraphOf(
+        4, {{0, 1, 42}, {1, 2, 0}, {2, 3, 42}, {3, 0, 0}, {0, 2, 42}});
 
     VF2 vf2INDUCED = VF2(ptrn2.G, trgt2.G, SubgraphIsomorphism::Semantics::INDUCED);
     vf2INDUCED.setEdgeLabels(ptrn2.edgeLabels, trgt2.edgeLabels);
@@ -242,8 +251,9 @@ TEST_F(VF2GTest, testEdgeLabelMatchingSanityCheck) {
 
     EXPECT_TRUE(vf2MONOMORPHISM.hasMatch());
     EXPECT_EQ(vf2MONOMORPHISM.numberOfMatches(), 4);
-    EXPECT_EQ(vf2MONOMORPHISM.getMatches(), (std::vector<IsomorphismTest::Match>{{0, 3, 2, 1},{1, 2, 3, 0},{2, 1, 0, 3},{3, 0, 1, 2}}));
-
+    EXPECT_EQ(vf2MONOMORPHISM.getMatches(),
+              (std::vector<IsomorphismTest::Match>{
+                  {0, 3, 2, 1}, {1, 2, 3, 0}, {2, 1, 0, 3}, {3, 0, 1, 2}}));
 }
 
 TEST_F(VF2GTest, testInitialTriangleCount) {

@@ -17,16 +17,22 @@ namespace {
 using IsomorphismDetails::MatchReporter;
 using IsomorphismDetails::SearchGraph;
 
+auto printVector = [](const auto &v) {
+    std::cout << "[";
+    for (index i = 0; i < v.size(); ++i) {
+        if (i > 0)
+            std::cout << ", ";
+
+        if (v[i] == none)
+            std::cout << "none";
+        else
+            std::cout << v[i];
+    }
+    std::cout << "]\n";
+};
+
 /**
  * Issues:
- *
- * We start with match(0). If nodes as added to terminal sets at depth 0, they get the depth stamp 0
- * so it just reads as if they are not present. Current fix: Start with match(1)
- *
- * Is removePair supposed to exactly reverse addPair? Upon addition we remove pu, tv from all
- * terminal sets but dont store their depth so we are unable to restore this in removePair. Current
- * fix: Use a vector to store depth stamps of pair pu, tv before removing them from all terminal
- * sets in addPair(pu,tv)
  *
  * MK: Valid concern, use a vector v (probably two -- for target and pattern)
  * to store what nodes you added into the terminal set on the depth d. Then remove those
@@ -37,13 +43,24 @@ using IsomorphismDetails::SearchGraph;
  * to store present (may be unordered_set would be more suitable), and solely the
  * vector (actually stack) v is enough for removePair.
  *
+ * AS: In addNodePair(pu, tv), when we map pu to tv, if either of them was part of a terminal set
+ * before, they must be removed from it. But they have not necessarily been added to it at the
+ * current depth so its entry in the members vector is somewhere further left and should be invalid.
+ * Currently we just leave these entries and when iterating over the members vectors we check fo
+ * each entry whether it is currently mapped. If yes, we skip that entry. So it is not a problem but
+ * maybe it is inefficient.
+ *
+ * AS: In addNodePair(pu, tv), we remove pu, tv from all terminal sets that they were part of.
+ * Currently we use a vector of length 4 to remember if pu, tv were part of any terminal sets. We
+ * hand this vector to removePair(pu, tv) to restore pu and tv terminal sets membership. Now that we
+ * have the members vectors we could also do this by iterating over the members vectors until we
+ * find pu, tv. Then we know it was part of the corresponding terminal set before addPair(pu, tv).
+ *
  * depth parameter in nextCandidatePair() is never used. If both in1 and in2 or both out1 and out2
  * are nonempty, in nextCandidatePair() we pair the smallest node in the first set with every node
  * in the second set. Could/should we use the depth parameter anywhere?
  *
  * TODO: More testcases?
- *
- * TODO: ruleLabels must check edge labels
  */
 
 /**
@@ -84,20 +101,20 @@ public:
             const std::vector<index> &targetEdgeLabels, SubgraphIsomorphism::Semantics semantics,
             Aux::SignalHandler &handler, MatchReporter report)
         : patternGraph(pattern, /* buildMatrix = */ true, patternEdgeLabels),
-          targetGraph(target, /* buildMatrix = */ false, targetEdgeLabels), patternNodeLabels(&patternNodeLabels),
-          targetNodeLabels(&targetNodeLabels), nodeLabelled(!patternNodeLabels.empty()), edgeLabelled(!patternEdgeLabels.empty()),
+          targetGraph(target, /* buildMatrix = */ false, targetEdgeLabels),
+          patternNodeLabels(&patternNodeLabels), targetNodeLabels(&targetNodeLabels),
+          nodeLabelled(!patternNodeLabels.empty()), edgeLabelled(!patternEdgeLabels.empty()),
           semantics(semantics), handler(&handler), report(std::move(report)), t1in(0), t1out(0),
           t2in(0), t2out(0) {
-            if (patternGraph.collapsedLabelledEdges())
-            {
-                throw std::runtime_error("VF2 does not run if pattern has unequally-labelled collapsed edges.");
-            }
-            if (targetGraph.collapsedLabelledEdges())
-            {
-                throw std::runtime_error("VF2 does not run if target has unequally-labelled collapsed edges.");
-            }
-            
-          }
+        if (patternGraph.collapsedLabelledEdges()) {
+            throw std::runtime_error(
+                "VF2 does not run if pattern has unequally-labelled collapsed edges.");
+        }
+        if (targetGraph.collapsedLabelledEdges()) {
+            throw std::runtime_error(
+                "VF2 does not run if target has unequally-labelled collapsed edges.");
+        }
+    }
 
     /**
      * Search for every match and report each one. Initialize core1/core2 and in1/out1/in2/out2.
@@ -124,8 +141,7 @@ public:
             return;
         }
 
-        // TODO: This is supposed to be match(0)
-        match(1);
+        match(0);
     }
 
 private:
@@ -139,7 +155,7 @@ private:
         std::vector<count> oldNodePairDepthStamps(4, 0);
 
         // If all pattern nodes are mapped, return mapping
-        if (depth - 1 == patternGraph.numberOfNodes()) {
+        if (depth == patternGraph.numberOfNodes()) {
             return reportMapping();
         }
 
@@ -180,17 +196,19 @@ private:
         if (t1out != 0 && t2out != 0) {
 
             // Find smallest unmapped pattern node in out1
-            for (index u = 0; u < core1.size(); ++u) {
+            for (node u = 0; u < core1.size(); ++u) {
                 if (patternGraph.hasNode(u) && core1[u] == none && out1[u] != 0) {
                     pu = u;
                     break;
                 }
             }
             // Pair with every unmapped target node in out2
-            for (index v = cursor; v < core2.size(); ++v) {
-                if (targetGraph.hasNode(v) && core2[v] == none && out2[v] != 0) {
+            for (index i = cursor; i < membersOut2.size(); ++i) {
+                node v = membersOut2[i];
+                if (targetGraph.hasNode(v) && core2[v] == none /*&& out2[v] != 0*/) {
                     tv = v;
-                    cursor = v + 1;
+                    // cursor = v + 1;
+                    cursor = i + 1;
                     return true;
                 }
             }
@@ -200,17 +218,19 @@ private:
         } else if (t1in != 0 && t2in != 0) {
 
             // Find smallest unmapped pattern node in in1
-            for (index u = 0; u < core1.size(); ++u) {
+            for (node u = 0; u < core1.size(); ++u) {
                 if (patternGraph.hasNode(u) && core1[u] == none && in1[u] != 0) {
                     pu = u;
                     break;
                 }
             }
             // Pair with every unmapped target node in in2
-            for (index v = cursor; v < core2.size(); ++v) {
-                if (targetGraph.hasNode(v) && core2[v] == none && in2[v] != 0) {
+            for (index i = cursor; i < membersIn2.size(); ++i) {
+                node v = membersIn2[i];
+                if (targetGraph.hasNode(v) && core2[v] == none /*&& in2[v] != 0*/) {
                     tv = v;
-                    cursor = v + 1;
+                    // cursor = v + 1;
+                    cursor = i + 1;
                     return true;
                 }
             }
@@ -220,14 +240,14 @@ private:
         } else {
 
             // Find smallest unmapped pattern node
-            for (index u = 0; u < core1.size(); ++u) {
+            for (node u = 0; u < core1.size(); ++u) {
                 if (patternGraph.hasNode(u) && core1[u] == none) {
                     pu = u;
                     break;
                 }
             }
             // Pair with every unmapped target node
-            for (index v = cursor; v < core2.size(); ++v) {
+            for (node v = cursor; v < core2.size(); ++v) {
                 if (targetGraph.hasNode(v) && core2[v] == none) {
                     tv = v;
                     cursor = v + 1;
@@ -262,10 +282,10 @@ private:
                 if (!targetGraph.hasEdge(tv, core1[u])) {
                     return false;
                 }
-                if (edgeLabelled)
-                {
-                    if (!(patternGraph.edgeLabel(pu, u) == targetGraph.edgeLabel(tv, core1[u]) || patternGraph.edgeLabel(pu, u) == none || targetGraph.edgeLabel(tv, core1[u]) == none))
-                    {
+                if (edgeLabelled) {
+                    if (!(patternGraph.edgeLabel(pu, u) == targetGraph.edgeLabel(tv, core1[u])
+                          || patternGraph.edgeLabel(pu, u) == none
+                          || targetGraph.edgeLabel(tv, core1[u]) == none)) {
                         return false;
                     }
                 }
@@ -281,10 +301,10 @@ private:
                     if (!patternGraph.hasEdge(pu, core2[v])) {
                         return false;
                     }
-                    if (edgeLabelled)
-                    {
-                        if (!(patternGraph.edgeLabel(tv, v) == targetGraph.edgeLabel(pu, core2[v]) || patternGraph.edgeLabel(tv, v) == none || targetGraph.edgeLabel(pu, core2[v]) == none))
-                        {
+                    if (edgeLabelled) {
+                        if (!(patternGraph.edgeLabel(tv, v) == targetGraph.edgeLabel(pu, core2[v])
+                              || patternGraph.edgeLabel(tv, v) == none
+                              || targetGraph.edgeLabel(pu, core2[v]) == none)) {
                             return false;
                         }
                     }
@@ -314,10 +334,10 @@ private:
                 if (!targetGraph.hasEdge(core1[u], tv)) {
                     return false;
                 }
-                if (edgeLabelled)
-                {
-                    if (!(patternGraph.edgeLabel(u, pu) == targetGraph.edgeLabel(core1[u], tv) || patternGraph.edgeLabel(u, pu) == none || targetGraph.edgeLabel(core1[u], tv) == none))
-                    {
+                if (edgeLabelled) {
+                    if (!(patternGraph.edgeLabel(u, pu) == targetGraph.edgeLabel(core1[u], tv)
+                          || patternGraph.edgeLabel(u, pu) == none
+                          || targetGraph.edgeLabel(core1[u], tv) == none)) {
                         return false;
                     }
                 }
@@ -333,10 +353,10 @@ private:
                     if (!patternGraph.hasEdge(core2[v], pu)) {
                         return false;
                     }
-                    if (edgeLabelled)
-                    {
-                    if (!(patternGraph.edgeLabel(v, tv) == targetGraph.edgeLabel(core2[v], pu) || patternGraph.edgeLabel(v, tv) == none || targetGraph.edgeLabel(core2[v], pu) == none))
-                        {
+                    if (edgeLabelled) {
+                        if (!(patternGraph.edgeLabel(v, tv) == targetGraph.edgeLabel(core2[v], pu)
+                              || patternGraph.edgeLabel(v, tv) == none
+                              || targetGraph.edgeLabel(core2[v], pu) == none)) {
                             return false;
                         }
                     }
@@ -509,16 +529,24 @@ private:
             t2out--;
         }
 
+        // Push index of first entry of new depth onto head vectors
+        headMembersIn1.push_back(membersIn1.size());
+        headMembersIn2.push_back(membersIn2.size());
+        headMembersOut1.push_back(membersOut1.size());
+        headMembersOut2.push_back(membersOut2.size());
+
         // Unmapped neighbors of pu and tv are added to the respective terminal sets
         // If undirected, iterating over out-neighbors is sufficient, because in1=out1 and in2=out2
         for (auto it = patternGraph.outBegin(pu); it != patternGraph.outEnd(pu); ++it) {
             node u = *it;
             if (core1[u] == none && out1[u] == 0) {
-                out1[u] = depth;
+                out1[u] = 1;
+                membersOut1.push_back(u);
                 t1out++;
 
                 if (!patternGraph.isDirected()) {
-                    in1[u] = depth;
+                    in1[u] = 1;
+                    membersIn1.push_back(u);
                     t1in++;
                 }
             }
@@ -527,11 +555,13 @@ private:
         for (auto it = targetGraph.outBegin(tv); it != targetGraph.outEnd(tv); ++it) {
             node v = *it;
             if (core2[v] == none && out2[v] == 0) {
-                out2[v] = depth;
+                out2[v] = 1;
+                membersOut2.push_back(v);
                 t2out++;
 
                 if (!patternGraph.isDirected()) {
-                    in2[v] = depth;
+                    in2[v] = 1;
+                    membersIn2.push_back(v);
                     t2in++;
                 }
             }
@@ -542,7 +572,8 @@ private:
             for (auto it = patternGraph.inBegin(pu); it != patternGraph.inEnd(pu); ++it) {
                 node u = *it;
                 if (core1[u] == none && in1[u] == 0) {
-                    in1[u] = depth;
+                    in1[u] = 1;
+                    membersIn1.push_back(u);
                     t1in++;
                 }
             }
@@ -550,7 +581,8 @@ private:
             for (auto it = targetGraph.inBegin(tv); it != targetGraph.inEnd(tv); ++it) {
                 node v = *it;
                 if (core2[v] == none && in2[v] == 0) {
-                    in2[v] = depth;
+                    in2[v] = 1;
+                    membersIn2.push_back(v);
                     t2in++;
                 }
             }
@@ -569,7 +601,58 @@ private:
         core2[tv] = none;
 
         // Remove all nodes from the terminal sets that were added as a result of addPair(pu, tv)
-        for (index u = 0; u < in1.size(); ++u) {
+        // Set terminal set indicators of removed nodes to zero
+        for (index i = headMembersIn1[depth]; i < membersIn1.size(); ++i) {
+            in1[membersIn1[i]] = 0;
+        }
+
+        for (index i = headMembersIn2[depth]; i < membersIn2.size(); ++i) {
+            in2[membersIn2[i]] = 0;
+        }
+
+        for (index i = headMembersOut1[depth]; i < membersOut1.size(); ++i) {
+            out1[membersOut1[i]] = 0;
+        }
+
+        for (index i = headMembersOut2[depth]; i < membersOut2.size(); ++i) {
+            out2[membersOut2[i]] = 0;
+        }
+
+        // TODO maybe unnecessary to do these size checks, can membersIn1.size() ever be < than
+        // headMembersIn1[depth]? Remove nodes from terminal set member vectors i.e. delete tail
+        if (membersIn1.size() >= headMembersIn1[depth]) {
+            t1in = t1in - (membersIn1.size() - headMembersIn1[depth]);
+            membersIn1.erase(membersIn1.begin() + headMembersIn1[depth], membersIn1.end());
+        }
+        if (membersIn2.size() >= headMembersIn2[depth]) {
+            t2in = t2in - (membersIn2.size() - headMembersIn2[depth]);
+            membersIn2.erase(membersIn2.begin() + headMembersIn2[depth], membersIn2.end());
+        }
+        if (membersOut1.size() >= headMembersOut1[depth]) {
+            t1out = t1out - (membersOut1.size() - headMembersOut1[depth]);
+            membersOut1.erase(membersOut1.begin() + headMembersOut1[depth], membersOut1.end());
+        }
+        if (membersOut2.size() >= headMembersOut2[depth]) {
+            t2out = t2out - (membersOut2.size() - headMembersOut2[depth]);
+            membersOut2.erase(membersOut2.begin() + headMembersOut2[depth], membersOut2.end());
+        }
+
+        // Remove last element from head vectors
+        headMembersIn1.pop_back();
+        headMembersIn2.pop_back();
+        headMembersOut1.pop_back();
+        headMembersOut2.pop_back();
+
+        headMembersIn1.shrink_to_fit();
+        headMembersIn2.shrink_to_fit();
+        headMembersOut1.shrink_to_fit();
+        headMembersOut2.shrink_to_fit();
+        membersIn1.shrink_to_fit();
+        membersIn2.shrink_to_fit();
+        membersOut1.shrink_to_fit();
+        membersOut2.shrink_to_fit();
+
+        /*for (index u = 0; u < in1.size(); ++u) {
             if (in1[u] == depth) {
                 in1[u] = 0;
                 t1in--;
@@ -589,24 +672,28 @@ private:
                 out2[v] = 0;
                 t2out--;
             }
-        }
+        */
 
         // If pu or tv were part of any terminal sets before addPair(pu, tv), restore their old
         // depth stamps
         if (oldNodePairDepthStamps[0] != 0) {
-            in1[pu] = oldNodePairDepthStamps[0];
+            // in1[pu] = oldNodePairDepthStamps[0];
+            in1[pu] = 1;
             t1in++;
         }
         if (oldNodePairDepthStamps[1] != 0) {
-            out1[pu] = oldNodePairDepthStamps[1];
+            // out1[pu] = oldNodePairDepthStamps[1];
+            out1[pu] = 1;
             t1out++;
         }
         if (oldNodePairDepthStamps[2] != 0) {
-            in2[tv] = oldNodePairDepthStamps[2];
+            // in2[tv] = oldNodePairDepthStamps[2];
+            in2[tv] = 1;
             t2in++;
         }
         if (oldNodePairDepthStamps[3] != 0) {
-            out2[tv] = oldNodePairDepthStamps[3];
+            // out2[tv] = oldNodePairDepthStamps[3];
+            out2[tv] = 1;
             t2out++;
         }
     }
@@ -655,6 +742,10 @@ private:
 
     /// Reused buffer handed to the reporter, so a match costs no allocation.
     std::vector<node> mapping;
+
+    /// Member vectors for in and out terminal sets
+    std::vector<node> membersIn1, membersIn2, membersOut1, membersOut2;
+    std::vector<index> headMembersIn1, headMembersIn2, headMembersOut1, headMembersOut2;
 };
 
 } // namespace
@@ -670,7 +761,8 @@ void VF2::run() {
     // hand - see the TODO at the top of this file.
     Aux::SignalHandler handler;
     prepareRun();
-    VF2Impl(*pattern, *target, patternNodeLabels, targetNodeLabels, patternEdgeLabels, targetEdgeLabels, semantics, handler,
+    VF2Impl(*pattern, *target, patternNodeLabels, targetNodeLabels, patternEdgeLabels,
+            targetEdgeLabels, semantics, handler,
             [this](const Match &match) { return reportMatch(match); })
         .run();
     finishRun();
