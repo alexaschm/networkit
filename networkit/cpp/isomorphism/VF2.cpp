@@ -17,7 +17,8 @@ namespace {
 using IsomorphismDetails::MatchReporter;
 using IsomorphismDetails::SearchGraph;
 
-auto printVector = [](const auto &v) {
+template <typename T>
+void printVector(const T &v) {
     std::cout << "[";
     for (index i = 0; i < v.size(); ++i) {
         if (i > 0)
@@ -29,7 +30,13 @@ auto printVector = [](const auto &v) {
             std::cout << v[i];
     }
     std::cout << "]\n";
-};
+}
+
+template <typename T>
+void printVector(const std::string &name, const T &v) {
+    std::cout << name << ": ";
+    printVector(v);
+}
 
 /**
  * Issues:
@@ -159,7 +166,7 @@ private:
             return reportMapping();
         }
 
-        index cursor = 0;
+        std::vector<index> cursor(2, 0);
         node pu = none;
         node tv = none;
         bool continueSearch;
@@ -191,7 +198,7 @@ private:
      * @param tv Out: the target node to try for it.
      * @return false when the candidates at this depth are exhausted.
      */
-    bool nextCandidatePair(count depth, index &cursor, node &pu, node &tv) const {
+    bool nextCandidatePair(count depth, std::vector<index> &cursor, node &pu, node &tv) const {
 
         if (t1out != 0 && t2out != 0) {
 
@@ -202,20 +209,52 @@ private:
                     break;
                 }
             }
+
             // Pair with every unmapped target node in out2
-            for (index i = cursor; i < membersOut2.size(); ++i) {
-                node v = membersOut2[i];
-                if (targetGraph.hasNode(v) && core2[v] == none /*&& out2[v] != 0*/) {
-                    tv = v;
-                    // cursor = v + 1;
-                    cursor = i + 1;
-                    return true;
+            if (!patternGraph.isDirected()) {
+                // If patternGraph is undirected, in and out terminal sets are the same and members
+                // vectors do not differentiate between in and out, i.e., do not store duplicate
+                // vertices so we can simply iterate over members vector
+                for (index i = cursor[0]; i < members2.size(); ++i) {
+                    node v = members2[i];
+                    if (targetGraph.hasNode(v) && core2[v] == none /*&& out2[v] != 0*/) {
+                        tv = v;
+                        // cursor = v + 1;
+                        cursor[0] = i + 1;
+                        return true;
+                    }
+                }
+            } else {
+                // If pattern graph is directed, at each depth first the out and then the in
+                // terminal set is appended to the members vector so we need to iterate over the
+                // members vector and leave gaps for the in terminal vertices
+                for (index i = cursor[1]; i < depth; i++) {
+                    for (index j = cursor[0]; j < headMembersIn2[i] - headMembersOut2[i]; j++) {
+                        node v = members2[headMembersOut2[i] + j];
+                        if (targetGraph.hasNode(v) && core2[v] == none /*&& out2[v] != 0*/) {
+                            tv = v;
+                            // cursor = v + 1;
+                            if (j + 1 < headMembersIn2[i] - headMembersOut2[i]) {
+                                cursor[0] = j + 1;
+                                return true;
+                            } else {
+                                cursor[0] = 0;
+                                cursor[1] = i + 1;
+                                return true;
+                            }
+                        }
+                        cursor[0] = 0;
+                    }
                 }
             }
 
             return false;
 
         } else if (t1in != 0 && t2in != 0) {
+
+            if (cursor[0] == 0 && cursor[1] == 0) {
+                cursor[0] = headMembersIn2[0];
+            }
 
             // Find smallest unmapped pattern node in in1
             for (node u = 0; u < core1.size(); ++u) {
@@ -224,14 +263,50 @@ private:
                     break;
                 }
             }
+
             // Pair with every unmapped target node in in2
-            for (index i = cursor; i < membersIn2.size(); ++i) {
-                node v = membersIn2[i];
-                if (targetGraph.hasNode(v) && core2[v] == none /*&& in2[v] != 0*/) {
-                    tv = v;
-                    // cursor = v + 1;
-                    cursor = i + 1;
-                    return true;
+            if (!patternGraph.isDirected()) {
+                // If patternGraph is undirected, in and out terminal sets are the same and members
+                // vectors do not differentiate between in and out, i.e., do not store duplicate
+                // vertices so we can simply iterate over members vector
+                for (index i = cursor[0]; i < members2.size(); ++i) {
+                    node v = members2[i];
+                    if (targetGraph.hasNode(v) && core2[v] == none /*&& in2[v] != 0*/) {
+                        tv = v;
+                        // cursor = v + 1;
+                        cursor[0] = i + 1;
+                        return true;
+                    }
+                }
+            } else {
+                // If pattern graph is directed, at each depth first the out and then the in
+                // terminal set is appended to the members vector so we need to iterate over the
+                // members vector and leave gaps for the in terminal vertices
+                for (index i = cursor[1]; i < depth; i++) {
+
+                    index end;
+                    if (i < depth || headMembersOut2.size() == depth) {
+                        end = headMembersOut2[i + 1] - headMembersOut2[i];
+                    } else {
+                        end = members2.size() - headMembersOut2[i];
+                    }
+
+                    for (index j = cursor[0]; j < end; j++) {
+                        node v = members2[headMembersIn2[i] + j];
+                        if (targetGraph.hasNode(v) && core2[v] == none /*&& out2[v] != 0*/) {
+                            tv = v;
+                            // cursor = v + 1;
+                            if (j + 1 < end) {
+                                cursor[0] = j + 1;
+                                return true;
+                            } else {
+                                cursor[0] = 0;
+                                cursor[1] = i + 1;
+                                return true;
+                            }
+                        }
+                        cursor[0] = 0;
+                    }
                 }
             }
 
@@ -247,10 +322,10 @@ private:
                 }
             }
             // Pair with every unmapped target node
-            for (node v = cursor; v < core2.size(); ++v) {
+            for (node v = cursor[0]; v < core2.size(); ++v) {
                 if (targetGraph.hasNode(v) && core2[v] == none) {
                     tv = v;
-                    cursor = v + 1;
+                    cursor[0] = v + 1;
                     return true;
                 }
             }
@@ -530,10 +605,15 @@ private:
         }
 
         // Push index of first entry of new depth onto head vectors
-        headMembersIn1.push_back(membersIn1.size());
-        headMembersIn2.push_back(membersIn2.size());
-        headMembersOut1.push_back(membersOut1.size());
-        headMembersOut2.push_back(membersOut2.size());
+        headMembersOut1.push_back(members1.size());
+        headMembersOut2.push_back(members2.size());
+        if (!patternGraph.isDirected()) {
+            headMembersIn1.push_back(members1.size());
+            headMembersIn2.push_back(members2.size());
+        }
+
+        count t1inOld = t1in;
+        count t2inOld = t2in;
 
         // Unmapped neighbors of pu and tv are added to the respective terminal sets
         // If undirected, iterating over out-neighbors is sufficient, because in1=out1 and in2=out2
@@ -541,12 +621,12 @@ private:
             node u = *it;
             if (core1[u] == none && out1[u] == 0) {
                 out1[u] = 1;
-                membersOut1.push_back(u);
+                members1.push_back(u);
                 t1out++;
 
                 if (!patternGraph.isDirected()) {
                     in1[u] = 1;
-                    membersIn1.push_back(u);
+                    // members1.push_back(u);
                     t1in++;
                 }
             }
@@ -556,15 +636,20 @@ private:
             node v = *it;
             if (core2[v] == none && out2[v] == 0) {
                 out2[v] = 1;
-                membersOut2.push_back(v);
+                members2.push_back(v);
                 t2out++;
 
                 if (!patternGraph.isDirected()) {
                     in2[v] = 1;
-                    membersIn2.push_back(v);
+                    // members2.push_back(v);
                     t2in++;
                 }
             }
+        }
+
+        if (patternGraph.isDirected()) {
+            headMembersIn1.push_back(members1.size());
+            headMembersIn2.push_back(members2.size());
         }
 
         // If directed, iterate over inNeighbors separately
@@ -573,7 +658,7 @@ private:
                 node u = *it;
                 if (core1[u] == none && in1[u] == 0) {
                     in1[u] = 1;
-                    membersIn1.push_back(u);
+                    members1.push_back(u);
                     t1in++;
                 }
             }
@@ -582,7 +667,7 @@ private:
                 node v = *it;
                 if (core2[v] == none && in2[v] == 0) {
                     in2[v] = 1;
-                    membersIn2.push_back(v);
+                    members2.push_back(v);
                     t2in++;
                 }
             }
@@ -602,40 +687,48 @@ private:
 
         // Remove all nodes from the terminal sets that were added as a result of addPair(pu, tv)
         // Set terminal set indicators of removed nodes to zero
-        for (index i = headMembersIn1[depth]; i < membersIn1.size(); ++i) {
-            in1[membersIn1[i]] = 0;
+        if (!patternGraph.isDirected()) {
+            // If undirected in and out terminal sets are the same, so, headMembersOut1[depth] =
+            // headMembersIn1[depth] and we need to reset the entries of all vertices to the right
+            // of that
+            for (index i = headMembersOut1[depth]; i < members1.size(); ++i) {
+                out1[members1[i]] = 0;
+                in1[members1[i]] = 0;
+            }
+            for (index i = headMembersOut2[depth]; i < members2.size(); ++i) {
+                out2[members2[i]] = 0;
+                in2[members2[i]] = 0;
+            }
+        } else {
+            for (index i = headMembersIn1[depth]; i < members1.size(); ++i) {
+                in1[members1[i]] = 0;
+            }
+            for (index i = headMembersIn2[depth]; i < members2.size(); ++i) {
+                in2[members2[i]] = 0;
+            }
+            for (index i = headMembersOut1[depth]; i < headMembersIn1[depth]; ++i) {
+                out1[members1[i]] = 0;
+            }
+            for (index i = headMembersOut2[depth]; i < headMembersIn2[depth]; ++i) {
+                out2[members2[i]] = 0;
+            }
         }
 
-        for (index i = headMembersIn2[depth]; i < membersIn2.size(); ++i) {
-            in2[membersIn2[i]] = 0;
+        // Adjust sizes of terminal sets accordingly
+        t1in = t1in - (members1.size() - headMembersIn1[depth]);
+        t2in = t2in - (members2.size() - headMembersIn2[depth]);
+        if (patternGraph.isDirected()) {
+            t1out = t1out - (headMembersIn1[depth] - headMembersOut1[depth]);
+            t2out = t2out - (headMembersIn2[depth] - headMembersOut2[depth]);
+        } else {
+            // In the undirected case, in and out terminal sets are the same
+            t1out = t1in;
+            t2out = t2in;
         }
 
-        for (index i = headMembersOut1[depth]; i < membersOut1.size(); ++i) {
-            out1[membersOut1[i]] = 0;
-        }
-
-        for (index i = headMembersOut2[depth]; i < membersOut2.size(); ++i) {
-            out2[membersOut2[i]] = 0;
-        }
-
-        // TODO maybe unnecessary to do these size checks, can membersIn1.size() ever be < than
-        // headMembersIn1[depth]? Remove nodes from terminal set member vectors i.e. delete tail
-        if (membersIn1.size() >= headMembersIn1[depth]) {
-            t1in = t1in - (membersIn1.size() - headMembersIn1[depth]);
-            membersIn1.erase(membersIn1.begin() + headMembersIn1[depth], membersIn1.end());
-        }
-        if (membersIn2.size() >= headMembersIn2[depth]) {
-            t2in = t2in - (membersIn2.size() - headMembersIn2[depth]);
-            membersIn2.erase(membersIn2.begin() + headMembersIn2[depth], membersIn2.end());
-        }
-        if (membersOut1.size() >= headMembersOut1[depth]) {
-            t1out = t1out - (membersOut1.size() - headMembersOut1[depth]);
-            membersOut1.erase(membersOut1.begin() + headMembersOut1[depth], membersOut1.end());
-        }
-        if (membersOut2.size() >= headMembersOut2[depth]) {
-            t2out = t2out - (membersOut2.size() - headMembersOut2[depth]);
-            membersOut2.erase(membersOut2.begin() + headMembersOut2[depth], membersOut2.end());
-        }
+        // Remove nodes from terminal set member vectors i.e. delete tail
+        members1.erase(members1.begin() + headMembersOut1[depth], members1.end());
+        members2.erase(members2.begin() + headMembersOut2[depth], members2.end());
 
         // Remove last element from head vectors
         headMembersIn1.pop_back();
@@ -647,10 +740,8 @@ private:
         headMembersIn2.shrink_to_fit();
         headMembersOut1.shrink_to_fit();
         headMembersOut2.shrink_to_fit();
-        membersIn1.shrink_to_fit();
-        membersIn2.shrink_to_fit();
-        membersOut1.shrink_to_fit();
-        membersOut2.shrink_to_fit();
+        members1.shrink_to_fit();
+        members2.shrink_to_fit();
 
         /*for (index u = 0; u < in1.size(); ++u) {
             if (in1[u] == depth) {
@@ -744,7 +835,7 @@ private:
     std::vector<node> mapping;
 
     /// Member vectors for in and out terminal sets
-    std::vector<node> membersIn1, membersIn2, membersOut1, membersOut2;
+    std::vector<node> members1, members2;
     std::vector<index> headMembersIn1, headMembersIn2, headMembersOut1, headMembersOut2;
 };
 

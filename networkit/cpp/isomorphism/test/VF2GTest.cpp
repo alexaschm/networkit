@@ -53,6 +53,19 @@ TEST_F(VF2GTest, dummyTest) {
     EXPECT_EQ(vf.numberOfMatches(), 12);
 }
 
+TEST_F(VF2GTest, dummyTest2) {
+    const Graph directedTriangle = IsomorphismTest::graphOf(3, {{0, 1}, {1, 2}, {2, 0}}, true);
+    const Graph directedTarget =
+        IsomorphismTest::graphOf(4, {{0, 1}, {1, 0}, {1, 2}, {2, 3}, {3, 1}}, true);
+
+    VF2 vf = VF2(directedTriangle, directedTarget, SubgraphIsomorphism::Semantics::MONOMORPHISM);
+    vf.run();
+    EXPECT_TRUE(vf.hasMatch());
+    EXPECT_EQ(vf.numberOfMatches(), 3);
+    EXPECT_EQ(vf.getMatches(),
+              (std::vector<IsomorphismTest::Match>{{1, 2, 3}, {2, 3, 1}, {3, 1, 2}}));
+}
+
 TEST_F(VF2GTest, testExceptionWhenBadlyCollapsed) {
 
     // Target badly collapsed
