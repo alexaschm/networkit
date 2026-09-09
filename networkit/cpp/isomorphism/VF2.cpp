@@ -1,3 +1,4 @@
+#include <array>
 #include <stdexcept>
 #include <vector>
 
@@ -152,8 +153,6 @@ private:
      */
     bool match(count depth) {
 
-        std::vector<count> restoreTerminalSets(8, 0);
-
         // If all pattern nodes are mapped, return mapping
         if (depth == patternGraph.numberOfNodes()) {
             return reportMapping();
@@ -169,7 +168,7 @@ private:
         while (nextCandidatePair(depth, cursor, pu, tv)) {
             handler->assureRunning();
             if (feasible(pu, tv)) {
-                restoreTerminalSets = addPair(pu, tv, depth);
+                const std::array<count, 8> restoreTerminalSets = addPair(pu, tv, depth);
                 continueSearch = match(depth + 1);
                 // Remove pair independent of outcome and abort search if it must be stopped
                 removePair(pu, tv, depth, restoreTerminalSets);
@@ -195,19 +194,16 @@ private:
 
         if (t1out != 0 && t2out != 0) {
 
-            // Find smallest unmapped pattern node in out1
-            for (node u = 0; u < core1.size(); ++u) {
-                if (patternGraph.hasNode(u) && core1[u] == none && out1[u] != none) {
-                    pu = u;
-                    break;
-                }
+            // Smallest pattern node still in out1. t1out is nonzero, so one exists.
+            pu = smallestMember(membersOut1, out1);
+            if (pu == none) {
+                return false;
             }
-            // Pair with every unmapped target node in out2
+            // Pair it with every target node still in out2
             for (index i = cursor; i < membersOut2.size(); ++i) {
                 node v = membersOut2[i];
-                if (targetGraph.hasNode(v) && core2[v] == none && out2[v] != none) {
+                if (out2[v] != none) {
                     tv = v;
-                    // cursor = v + 1;
                     cursor = i + 1;
                     return true;
                 }
@@ -217,19 +213,16 @@ private:
 
         } else if (t1in != 0 && t2in != 0) {
 
-            // Find smallest unmapped pattern node in in1
-            for (node u = 0; u < core1.size(); ++u) {
-                if (patternGraph.hasNode(u) && core1[u] == none && in1[u] != none) {
-                    pu = u;
-                    break;
-                }
+            // Smallest pattern node still in in1. t1in is nonzero, so one exists.
+            pu = smallestMember(membersIn1, in1);
+            if (pu == none) {
+                return false;
             }
-            // Pair with every unmapped target node in in2
+            // Pair it with every target node still in in2
             for (index i = cursor; i < membersIn2.size(); ++i) {
                 node v = membersIn2[i];
-                if (targetGraph.hasNode(v) && core2[v] == none && in2[v] != none) {
+                if (in2[v] != none) {
                     tv = v;
-                    // cursor = v + 1;
                     cursor = i + 1;
                     return true;
                 }
@@ -492,20 +485,55 @@ private:
     }
 
     /**
+     * The smallest node still in a terminal set, or @ref none when the set holds nothing.
+     *
+     * A member vector can carry entries whose slot reads @ref none. Those are nodes that were
+     * mapped after they joined the set: @ref addPair() clears the slot but leaves the entry in
+     * place, and @ref removePair() puts the slot back. A live slot therefore implies an unmapped
+     * node, so the slot alone decides membership here. There are never more than @a depth dead
+     * entries, which is why walking the member vector beats walking every node id.
+     */
+    static node smallestMember(const std::vector<node> &members, const std::vector<index> &slot) {
+        node smallest = none;
+        for (node u : members) {
+            // none is the largest representable id, so an empty set falls out of the comparison.
+            if (slot[u] != none && u < smallest) {
+                smallest = u;
+            }
+        }
+        return smallest;
+    }
+
+    /**
+     * Drop everything a terminal set gained since it had size @a mark, and clear those slots.
+     *
+     * The member vectors only ever grow between an @ref addPair() and its matching
+     * @ref removePair(), because every deeper depth has already undone itself by then. The tail
+     * above @a mark is therefore exactly what this depth added. Capacity is kept on purpose: the
+     * next descent reuses it, which is the whole point of holding the members in a flat stack.
+     */
+    static void popTail(std::vector<node> &members, std::vector<index> &slot, count mark,
+                        count &size) {
+        for (index i = mark; i < members.size(); ++i) {
+            slot[members[i]] = none;
+        }
+        size -= members.size() - mark;
+        members.resize(mark);
+    }
+
+    /**
      * Add (@a pu, @a tv) to the mapping and update the four terminal sets.
      *
-     * @return restoreTerminalSets Entries 0 to 3 contain the positions @a pu and @a tv had in the
-     * terminal set member vectors before addPair(pu, tv) removed them, entries 4 to 7 contain the
-     * size of the terminal set member vectors before addPair(pu, tv)
+     * @return The record @ref removePair() needs to undo this call. Entries 0 to 3 hold the
+     * positions @a pu and @a tv had in the four member vectors, or @ref none where the node was
+     * not in that set. Entries 4 to 7 hold the sizes the four member vectors had beforehand.
      */
-    std::vector<count> addPair(node pu, node tv, count depth) {
+    std::array<count, 8> addPair(node pu, node tv, count depth) {
 
-        // Store the positions pu and tv have in the terminal set member vectors
-        std::vector<count> restoreTerminalSets(8, 0);
-        restoreTerminalSets[0] = in1[pu];
-        restoreTerminalSets[1] = out1[pu];
-        restoreTerminalSets[2] = in2[tv];
-        restoreTerminalSets[3] = out2[tv];
+        // Where pu and tv sit in the member vectors right now. The sizes go in below, once the
+        // two nodes have left their sets but before any neighbour joins one.
+        std::array<count, 8> restoreTerminalSets = {in1[pu], out1[pu], in2[tv], out2[tv],
+                                                    0,       0,        0,       0};
 
         // Map pu and tv onto each other
         core1[pu] = tv;
@@ -559,7 +587,7 @@ private:
                 membersOut2.push_back(v);
                 t2out++;
 
-                if (!patternGraph.isDirected()) {
+                if (!targetGraph.isDirected()) {
                     in2[v] = membersIn2.size();
                     membersIn2.push_back(v);
                     t2in++;
@@ -577,7 +605,9 @@ private:
                     t1in++;
                 }
             }
+        }
 
+        if (targetGraph.isDirected()) {
             for (auto it = targetGraph.inBegin(tv); it != targetGraph.inEnd(tv); ++it) {
                 node v = *it;
                 if (core2[v] == none && in2[v] == none) {
@@ -593,56 +623,21 @@ private:
 
     /**
      * Undo @ref addPair() exactly.
+     *
+     * @param restoreTerminalSets The record @ref addPair() returned for this very pair.
      */
-    void removePair(node pu, node tv, count depth, std::vector<count> restoreTerminalSets) {
+    void removePair(node pu, node tv, count depth,
+                    const std::array<count, 8> &restoreTerminalSets) {
 
         // Unmap pu and tv
         core1[pu] = none;
         core2[tv] = none;
 
-        // Remove all nodes from the terminal sets that were added as a result of addPair(pu, tv)
-        // Set terminal set member vector positions of removed nodes to none
-        for (index i = restoreTerminalSets[4]; i < membersIn1.size(); ++i) {
-            in1[membersIn1[i]] = none;
-        }
-
-        for (index i = restoreTerminalSets[5]; i < membersIn2.size(); ++i) {
-            in2[membersIn2[i]] = none;
-        }
-
-        for (index i = restoreTerminalSets[6]; i < membersOut1.size(); ++i) {
-            out1[membersOut1[i]] = none;
-        }
-
-        for (index i = restoreTerminalSets[7]; i < membersOut2.size(); ++i) {
-            out2[membersOut2[i]] = none;
-        }
-
-        // TODO maybe unnecessary to do these size checks, can membersIn1.size() ever be < than
-        // headMembersIn1[depth]?
-        // Remove nodes from terminal set member vectors, i.e., delete tail
-        if (membersIn1.size() >= restoreTerminalSets[4]) {
-            t1in = t1in - (membersIn1.size() - restoreTerminalSets[4]);
-            membersIn1.erase(membersIn1.begin() + restoreTerminalSets[4], membersIn1.end());
-        }
-        if (membersIn2.size() >= restoreTerminalSets[5]) {
-            t2in = t2in - (membersIn2.size() - restoreTerminalSets[5]);
-            membersIn2.erase(membersIn2.begin() + restoreTerminalSets[5], membersIn2.end());
-        }
-        if (membersOut1.size() >= restoreTerminalSets[6]) {
-            t1out = t1out - (membersOut1.size() - restoreTerminalSets[6]);
-            membersOut1.erase(membersOut1.begin() + restoreTerminalSets[6], membersOut1.end());
-        }
-        if (membersOut2.size() >= restoreTerminalSets[7]) {
-            t2out = t2out - (membersOut2.size() - restoreTerminalSets[7]);
-            membersOut2.erase(membersOut2.begin() + restoreTerminalSets[7], membersOut2.end());
-        }
-
-        // Shrink terminal set member vectors back to size
-        membersIn1.shrink_to_fit();
-        membersIn2.shrink_to_fit();
-        membersOut1.shrink_to_fit();
-        membersOut2.shrink_to_fit();
+        // Drop everything the four terminal sets gained in addPair(pu, tv) and clear those slots
+        popTail(membersIn1, in1, restoreTerminalSets[4], t1in);
+        popTail(membersIn2, in2, restoreTerminalSets[5], t2in);
+        popTail(membersOut1, out1, restoreTerminalSets[6], t1out);
+        popTail(membersOut2, out2, restoreTerminalSets[7], t2out);
 
         // If pu or tv were part of any terminal sets before addPair(pu, tv), add them back in and
         // restore the positions they had in the terminal set member vectors before addPair(pu, tv)
