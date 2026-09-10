@@ -92,6 +92,8 @@ public:
      * @param target Snapshot of the target, built without it.
      * @param patternNodeLabels Empty when the search is unlabelled.
      * @param targetNodeLabels Empty when the search is unlabelled.
+     * @param patternEdgeLabels Empty when the search is unlabelled.
+     * @param targetEdgeLabels Empty when the search is unlabelled.
      * @param semantics Whether matches must be induced.
      * @param handler Polled so a long search can be stopped with CTRL+C.
      * @param report Where complete mappings are reported.
@@ -270,7 +272,8 @@ private:
 
     /**
      * Consistency rule for out-edges. For every out-neighbour of @a pu that is already mapped, the
-     * target must contain the corresponding edge out of @a tv.
+     * target must contain the corresponding edge out of @a tv. If the graphs are edgeLabelled, the
+     * edge labels of corresponding edges must match.
      */
     bool ruleSuccessors(node pu, node tv) const {
 
@@ -318,7 +321,8 @@ private:
     /**
      * Consistency rule for in-edges. The mirror image of @ref ruleSuccessors(). For every
      * in-neighbour of @a pu that is already mapped, the target must contain the corresponding edge
-     * into @a tv.
+     * into @a tv. If the graphs are edgeLabelled, the edge labels of corresponding edges must
+     * match.
      */
     bool rulePredecessors(node pu, node tv) const {
 

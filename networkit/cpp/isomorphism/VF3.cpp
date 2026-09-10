@@ -1,3 +1,4 @@
+#include <queue>
 #include <stdexcept>
 #include <vector>
 
@@ -16,6 +17,19 @@ namespace {
 
 using IsomorphismDetails::MatchReporter;
 using IsomorphismDetails::SearchGraph;
+
+/**
+ * Questions and issues:
+ *
+ * AS: classifyNodes(): Nodes that are no longer present in a graph should have the label none,
+ * correct? I am using an unodered_map to keep track of previously label-class pairs. Maybe there is
+ * a better way...
+ *
+ * AS: computeNodeOrder(): The paper says if there is a tie when determining the first node to
+ * "select the first". I have intrpreted this as pick the one with the smallest id but maybe that's
+ * wrong.
+ *
+ */
 
 /**
  * The actual VF3 search.
@@ -49,17 +63,30 @@ public:
      * @param target Snapshot of the target, built without it.
      * @param patternNodeLabels Empty when the search is unlabelled; then there is one class.
      * @param targetNodeLabels Empty when the search is unlabelled.
+     * @param patternEdgeLabels Empty when the search is unlabelled.
+     * @param targetEdgeLabels Empty when the search is unlabelled.
      * @param semantics Whether matches must be induced.
      * @param handler Polled so a long search can be stopped with CTRL+C.
      * @param report Where complete mappings are reported.
      */
     VF3Impl(const Graph &pattern, const Graph &target, const std::vector<index> &patternNodeLabels,
-            const std::vector<index> &targetNodeLabels, SubgraphIsomorphism::Semantics semantics,
+            const std::vector<index> &targetNodeLabels, const std::vector<index> &patternEdgeLabels,
+            const std::vector<index> &targetEdgeLabels, SubgraphIsomorphism::Semantics semantics,
             Aux::SignalHandler &handler, MatchReporter report)
-        : patternGraph(pattern, /* buildMatrix = */ true),
-          targetGraph(target, /* buildMatrix = */ false), patternNodeLabels(&patternNodeLabels),
-          targetNodeLabels(&targetNodeLabels), nodeLabelled(!patternNodeLabels.empty()),
-          semantics(semantics), handler(&handler), report(std::move(report)), numberOfClasses(0) {}
+        : patternGraph(pattern, /* buildMatrix = */ true, patternEdgeLabels),
+          targetGraph(target, /* buildMatrix = */ false, targetEdgeLabels),
+          patternNodeLabels(&patternNodeLabels), targetNodeLabels(&targetNodeLabels),
+          nodeLabelled(!patternNodeLabels.empty()), edgeLabelled(!patternEdgeLabels.empty()),
+          semantics(semantics), handler(&handler), report(std::move(report)), numberOfClasses(0) {
+        if (patternGraph.collapsedLabelledEdges()) {
+            throw std::runtime_error(
+                "VF3 does not run if pattern has unequally-labelled collapsed edges.");
+        }
+        if (targetGraph.collapsedLabelledEdges()) {
+            throw std::runtime_error(
+                "VF3 does not run if target has unequally-labelled collapsed edges.");
+        }
+    }
 
     /**
      * Search for every match and report each one.
@@ -82,16 +109,179 @@ public:
 
 private:
     /**
-     * Group the nodes of both graphs into classes.
-     *
-     * TODO: implement. Map each distinct label to a small dense class id and fill
-     * patternClass/targetClass with it, counting the target's classes into targetClassSize. When
-     * the search is unlabelled every node goes into class 0, which makes the rest of the
-     * algorithm degrade gracefully into a statically ordered VF2.
+     * Groups the nodes of both graphs into dense classes according to their labels. Non-existent
+     * nodes belong to the class none which is not treated as a real class and therefore does not
+     * count into the number of classes. When the search is unlabelled there is only one class and
+     * every existing node is in it, which makes the rest of the algorithm degrade gracefully into a
+     * statically ordered VF2.
      */
     void classifyNodes() {
-        throw std::logic_error("VF3Impl::classifyNodes() is not implemented yet");
+
+        patternClass.resize(patternGraph.upperNodeIdBound(), 0);
+        targetClass.resize(targetGraph.upperNodeIdBound(), 0);
+
+        // If there are no node labels, there is one class and all existing nodes are in it but we
+        // must manually set the class to none for non-existent nodes
+        if (!nodeLabelled) {
+            targetClassSize.resize(1, targetGraph.numberOfNodes());
+            numberOfClasses = 1;
+            for (node u = 0; u < patternGraph.upperNodeIdBound(); u++) {
+                if (!patternGraph.hasNode(u)) {
+                    patternClass[u] = none;
+                }
+            }
+
+            for (node u = 0; u < targetGraph.upperNodeIdBound(); u++) {
+                if (!targetGraph.hasNode(u)) {
+                    targetClass[u] = none;
+                }
+            }
+            return;
+        }
+
+        // If there are node labels, we iterate over the nodes of both graphs and check the label of
+        // each node. If we have seen the label before, the node is added to the class associated
+        // with the label. Otherwise we create a new class, associate the newly discovered label
+        // with it and add the node to the new class.
+        std::unordered_map<index, count> nodeLabelMap;
+        nodeLabelMap.reserve(targetGraph.numberOfNodes());
+        count labelCounter = 0;
+
+        // Iterate over the nodes of the pattern
+        for (node u = 0; u < patternGraph.upperNodeIdBound(); u++) {
+            if (patternGraph.hasNode(u)) {
+                if (nodeLabelMap.contains((*patternNodeLabels)[u])) {
+                    patternClass[u] = nodeLabelMap[(*patternNodeLabels)[u]];
+                } else {
+                    patternClass[u] = labelCounter;
+                    nodeLabelMap.insert({(*patternNodeLabels)[u], labelCounter});
+                    labelCounter++;
+                }
+            } else {
+                patternClass[u] = none;
+            }
+        }
+
+        // TODO: Is there a way we can reserve a fitting amount of memory here
+        targetClassSize.resize(0, nodeLabelMap.size());
+
+        // Iterate over the nodes of the target
+        for (node u = 0; u < targetGraph.upperNodeIdBound(); u++) {
+            if (targetGraph.hasNode(u)) {
+                if (nodeLabelMap.contains((*targetNodeLabels)[u])) {
+                    targetClass[u] = nodeLabelMap[(*targetNodeLabels)[u]];
+                    targetClassSize[targetClass[u]]++;
+                } else {
+                    targetClass[u] = labelCounter;
+                    nodeLabelMap.insert({(*targetNodeLabels)[u], labelCounter});
+                    targetClassSize.push_back(1);
+                    labelCounter++;
+                }
+            } else {
+                targetClass[u] = none;
+            }
+        }
+
+        numberOfClasses = labelCounter - 1;
     }
+
+    /**
+     * Compute the first node of the pattern graph node ordering.
+     *
+     * The starting node is the one with the lowest probability. If there are multiple nodes with
+     * that probability, the one with maximum degree is selected. If there are multiple nodes with
+     * that probability and degree, the one with the smallest id is selected.
+     *
+     * @return node The first node of the pattern graph node ordering.
+     */
+    node findStartingNode() {
+
+        // The probability of a node with label l and degree d is: (probability to find a node with
+        // label l in G2) times (probability to find a node with degree d in G2). This means that
+        // for a fixed class, the node with the highest degree has the lowest probability out of all
+        // the nodes in that class. In targetClassProbability[l] is the probability to find a node
+        // with label l in G2. So we need to find for each class the node with the highest degree
+        // and if there are multiple, we pick the one with the smallest id.
+
+        std::vector<count> degreeCounts(targetGraph.maxOutDegree(), 0);
+
+        for (node u = 0; u < targetGraph.upperNodeIdBound(); u++) {
+            if (targetGraph.hasNode(u)) {
+                degreeCounts[targetGraph.outDegree(u)]++;
+            }
+        }
+
+        std::partial_sum(std::rbegin(degreeCounts), std::rend(degreeCounts),
+                         std::rbegin(degreeCounts));
+
+        // Now degreeCounts[i] contains the number of nodes with degree >= i in the target graph
+
+        node startingNode = 0;
+
+        if (!patternGraph.hasNode(0)) {
+            for (node u = 0; u < patternGraph.upperNodeIdBound(); u++) {
+                if (patternGraph.hasNode(u)) {
+                    startingNode = u;
+                    break;
+                }
+            }
+        }
+
+        // Iterate over all existing nodes in the pattern graph and if one has a lower probability
+        // (utilize tie breaking where necessary) than the current staringNode, replace it
+        for (node u = 0; u < patternGraph.upperNodeIdBound(); u++) {
+            if (patternGraph.hasNode(u)) {
+                if ((targetClass[patternClass[u]] * degreeCounts[patternGraph.outDegree(u)])
+                    < (targetClass[patternClass[startingNode]]
+                       * degreeCounts[patternGraph.outDegree(startingNode)])) {
+                    startingNode = u;
+                } else if (((targetClass[patternClass[u]] * degreeCounts[patternGraph.outDegree(u)])
+                            < (targetClass[patternClass[startingNode]]
+                               * degreeCounts[patternGraph.outDegree(startingNode)]))
+                           && patternGraph.outDegree(u) < patternGraph.outDegree(startingNode)) {
+                    startingNode = u;
+                } else if (((targetClass[patternClass[u]] * degreeCounts[patternGraph.outDegree(u)])
+                            < (targetClass[patternClass[startingNode]]
+                               * degreeCounts[patternGraph.outDegree(startingNode)]))
+                           && patternGraph.outDegree(u) == patternGraph.outDegree(startingNode)
+                           && u < startingNode) {
+                    startingNode = u;
+                }
+            }
+        }
+
+        return startingNode;
+    }
+
+    struct queueEntry {
+        node id;
+        count internalDegAtInsertion;
+    };
+
+    // CompareNodes(u, v) == true bedeutet, v hat hörere Prio als u
+    struct compareNodes {
+
+        const VF3Impl &vf3;
+
+        bool operator()(const queueEntry &u, const queueEntry &v) const {
+
+            if (u.internalDegAtInsertion != v.internalDegAtInsertion) {
+                return u.internalDegAtInsertion < v.internalDegAtInsertion;
+            }
+
+            int probU = vf3.targetClass[vf3.patternClass[u.id]]
+                        * vf3.degreeCounts[vf3.patternGraph.outDegree(u.id)];
+
+            int probV = vf3.targetClass[vf3.patternClass[v.id]]
+                        * vf3.degreeCounts[vf3.patternGraph.outDegree(v.id)];
+
+            if (probU != probV) {
+                return probU > probV;
+            }
+
+            return u.id > v.id;
+        }
+    };
 
     /**
      * Compute the fixed order in which pattern nodes will be mapped.
@@ -107,7 +297,49 @@ private:
      * already provides a degeneracy ordering; MaximalCliques.cpp shows the three lines it takes.
      */
     void computeNodeOrder() {
-        throw std::logic_error("VF3Impl::computeNodeOrder() is not implemented yet");
+
+        order.resize(patternGraph.upperNodeIdBound(), 0);
+        orderParent.resize(patternGraph.upperNodeIdBound(), none);
+
+        internalDegree.resize(patternGraph.upperNodeIdBound(), 0);
+
+        compareNodes compare{*this};
+
+        std::priority_queue<queueEntry, std::vector<queueEntry>, compareNodes> nextInNodeOrder(
+            compare);
+
+        // The starting node is the one with the lowest probability (utilizing tie breaking where
+        // necessary, see findStartingNode() for details)
+        order[0] = findStartingNode();
+
+        for (auto it = patternGraph.outBegin(order[0]); it != patternGraph.outEnd(order[0]); ++it) {
+            internalDegree[*it]++;
+            nextInNodeOrder.push({*it, internalDegree[*it]});
+        }
+
+        for (index i = 1; i < order.size(); i++) {
+            if (nextInNodeOrder.empty()) {
+                return;
+            }
+
+            // Discard outdated elements
+            while (internalDegree[nextInNodeOrder.top().id]
+                   != nextInNodeOrder.top().internalDegAtInsertion) {
+                nextInNodeOrder.pop();
+            }
+
+            order[i] = nextInNodeOrder.top().id;
+            nextInNodeOrder.pop();
+
+            for (auto it = patternGraph.outBegin(order[i]); it != patternGraph.outEnd(order[i]);
+                 ++it) {
+                internalDegree[*it]++;
+                // Hier können auch schon einsortierte nodes auf die pq gepusht werden
+                nextInNodeOrder.push({*it, internalDegree[*it]});
+            }
+        }
+
+        // Set orderParent[i] zu der Position die parent von i in order hat
     }
 
     /**
@@ -118,8 +350,7 @@ private:
      * candidates and therefore prunes hard.
      */
     double classProbability(index cls) const {
-        tlx::unused(cls);
-        throw std::logic_error("VF3Impl::classProbability() is not implemented yet");
+        return (targetClassSize[cls] / targetGraph.numberOfNodes());
     }
 
     /**
@@ -253,6 +484,7 @@ private:
     const std::vector<index> *patternNodeLabels;
     const std::vector<index> *targetNodeLabels;
     bool nodeLabelled;
+    bool edgeLabelled;
 
     SubgraphIsomorphism::Semantics semantics;
 
@@ -268,6 +500,9 @@ private:
     /// How many target nodes each class contains.
     std::vector<count> targetClassSize;
     count numberOfClasses;
+
+    std::vector<count> degreeCounts;
+    std::vector<count> internalDegree;
 
     /// Fixed matching order: order[i] is the pattern node mapped at depth i.
     std::vector<node> order;
