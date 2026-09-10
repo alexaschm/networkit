@@ -18,20 +18,6 @@ namespace {
 using IsomorphismDetails::MatchReporter;
 using IsomorphismDetails::SearchGraph;
 
-auto printVector = [](const auto &v) {
-    std::cout << "[";
-    for (index i = 0; i < v.size(); ++i) {
-        if (i > 0)
-            std::cout << ", ";
-
-        if (v[i] == none)
-            std::cout << "none";
-        else
-            std::cout << v[i];
-    }
-    std::cout << "]\n";
-};
-
 /**
  * Issues:
  *
@@ -165,13 +151,13 @@ private:
 
         // Iterate over all candidate pairs and if candidate pair is feasible, add pair and call
         // match(depth + 1)
-        while (nextCandidatePair(depth, cursor, pu, tv)) {
+        while (nextCandidatePair(cursor, pu, tv)) {
             handler->assureRunning();
             if (feasible(pu, tv)) {
-                const std::array<count, 8> restoreTerminalSets = addPair(pu, tv, depth);
+                const std::array<count, 8> restoreTerminalSets = addPair(pu, tv);
                 continueSearch = match(depth + 1);
                 // Remove pair independent of outcome and abort search if it must be stopped
-                removePair(pu, tv, depth, restoreTerminalSets);
+                removePair(pu, tv, restoreTerminalSets);
                 if (!continueSearch) {
                     return false;
                 }
@@ -190,7 +176,7 @@ private:
      * @param tv Out: the target node to try for it.
      * @return false when the candidates at this depth are exhausted.
      */
-    bool nextCandidatePair(count depth, index &cursor, node &pu, node &tv) const {
+    bool nextCandidatePair(index &cursor, node &pu, node &tv) const {
 
         if (t1out != 0 && t2out != 0) {
 
@@ -528,7 +514,7 @@ private:
      * positions @a pu and @a tv had in the four member vectors, or @ref none where the node was
      * not in that set. Entries 4 to 7 hold the sizes the four member vectors had beforehand.
      */
-    std::array<count, 8> addPair(node pu, node tv, count depth) {
+    std::array<count, 8> addPair(node pu, node tv) {
 
         // Where pu and tv sit in the member vectors right now. The sizes go in below, once the
         // two nodes have left their sets but before any neighbour joins one.
@@ -626,8 +612,7 @@ private:
      *
      * @param restoreTerminalSets The record @ref addPair() returned for this very pair.
      */
-    void removePair(node pu, node tv, count depth,
-                    const std::array<count, 8> &restoreTerminalSets) {
+    void removePair(node pu, node tv, const std::array<count, 8> &restoreTerminalSets) {
 
         // Unmap pu and tv
         core1[pu] = none;

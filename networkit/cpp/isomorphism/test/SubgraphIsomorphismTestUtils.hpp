@@ -322,13 +322,15 @@ inline std::vector<Case> standardCases() {
 
     // The worked example in the class documentation: a 3-path does occur in a triangle, but not
     // as an induced occurrence, because the pattern's missing edge must stay missing.
-    cases.push_back({"path3-in-triangle-mono", path3, triangle, Semantics::MONOMORPHISM, {}, {}});
-    cases.push_back({"path3-in-triangle-induced", path3, triangle, Semantics::INDUCED, {}, {}});
+    cases.push_back(
+        {"path3-in-triangle-mono", path3, triangle, Semantics::MONOMORPHISM, {}, {}, {}, {}});
+    cases.push_back(
+        {"path3-in-triangle-induced", path3, triangle, Semantics::INDUCED, {}, {}, {}, {}});
 
     // Dense: here the two semantics agree, because the pattern has no missing edge to protect.
-    cases.push_back({"triangle-in-k4-mono", triangle, k4, Semantics::MONOMORPHISM, {}, {}});
-    cases.push_back({"triangle-in-k4-induced", triangle, k4, Semantics::INDUCED, {}, {}});
-    cases.push_back({"k4-in-k5-induced", k4, k5, Semantics::INDUCED, {}, {}});
+    cases.push_back({"triangle-in-k4-mono", triangle, k4, Semantics::MONOMORPHISM, {}, {}, {}, {}});
+    cases.push_back({"triangle-in-k4-induced", triangle, k4, Semantics::INDUCED, {}, {}, {}, {}});
+    cases.push_back({"k4-in-k5-induced", k4, k5, Semantics::INDUCED, {}, {}, {}, {}});
 
     // A pattern that cannot fit. Catches an early-exit that bails out too eagerly, and one that
     // does not bail out at all.
@@ -336,6 +338,8 @@ inline std::vector<Case> standardCases() {
                      triangle,
                      graphOf(2, {{0, 1}}),
                      Semantics::MONOMORPHISM,
+                     {},
+                     {},
                      {},
                      {}});
 
@@ -346,11 +350,15 @@ inline std::vector<Case> standardCases() {
                      graphOf(4, {{0, 1}, {1, 2}}),
                      Semantics::MONOMORPHISM,
                      {},
+                     {},
+                     {},
                      {}});
     cases.push_back({"disconnected-pattern",
                      graphOf(4, {{0, 1}, {2, 3}}),
                      graphOf(5, {{0, 1}, {1, 2}, {3, 4}}),
                      Semantics::MONOMORPHISM,
+                     {},
+                     {},
                      {},
                      {}});
 
@@ -361,28 +369,31 @@ inline std::vector<Case> standardCases() {
     gappedTarget.removeNode(2);
     gappedTarget.removeNode(5);
     cases.push_back(
-        {"target-with-removed-ids", path3, gappedTarget, Semantics::MONOMORPHISM, {}, {}});
+        {"target-with-removed-ids", path3, gappedTarget, Semantics::MONOMORPHISM, {}, {}, {}, {}});
     cases.push_back({"isolated-pattern-node-vs-removed-ids",
                      graphOf(3, {{0, 1}}),
                      gappedTarget,
                      Semantics::MONOMORPHISM,
+                     {},
+                     {},
                      {},
                      {}});
 
     Graph gappedPattern = graphOf(4, {{0, 1}, {1, 3}});
     gappedPattern.removeNode(2);
     cases.push_back(
-        {"pattern-with-removed-ids", gappedPattern, k4, Semantics::MONOMORPHISM, {}, {}});
+        {"pattern-with-removed-ids", gappedPattern, k4, Semantics::MONOMORPHISM, {}, {}, {}, {}});
 
     // Degenerate patterns. Both must produce exactly one match - the empty mapping - rather than
     // zero or a crash, and the match has to be full width with `none` at every gap.
-    cases.push_back({"empty-pattern", Graph(0), k4, Semantics::INDUCED, {}, {}});
+    cases.push_back({"empty-pattern", Graph(0), k4, Semantics::INDUCED, {}, {}, {}, {}});
     Graph allRemoved(3);
     for (node u = 0; u < 3; ++u)
         allRemoved.removeNode(u);
-    cases.push_back({"pattern-with-all-nodes-removed", allRemoved, k4, Semantics::INDUCED, {}, {}});
     cases.push_back(
-        {"single-node-pattern", Graph(1), gappedTarget, Semantics::MONOMORPHISM, {}, {}});
+        {"pattern-with-all-nodes-removed", allRemoved, k4, Semantics::INDUCED, {}, {}, {}, {}});
+    cases.push_back(
+        {"single-node-pattern", Graph(1), gappedTarget, Semantics::MONOMORPHISM, {}, {}, {}, {}});
 
     // Multi-edges and a self-loop in the target must change nothing. If they leak through, the
     // same match gets reported twice, or degree pruning rejects valid host nodes.
@@ -393,12 +404,20 @@ inline std::vector<Case> standardCases() {
     messyTarget.addEdge(2, 0);
     messyTarget.addEdge(3, 3); // self-loop
     messyTarget.addEdge(2, 3);
-    cases.push_back(
-        {"target-with-multiedges-and-loop", path3, messyTarget, Semantics::MONOMORPHISM, {}, {}});
+    cases.push_back({"target-with-multiedges-and-loop",
+                     path3,
+                     messyTarget,
+                     Semantics::MONOMORPHISM,
+                     {},
+                     {},
+                     {},
+                     {}});
     cases.push_back({"target-with-multiedges-and-loop-induced",
                      path3,
                      messyTarget,
                      Semantics::INDUCED,
+                     {},
+                     {},
                      {},
                      {}});
 
@@ -409,36 +428,66 @@ inline std::vector<Case> standardCases() {
     const Graph directedTriangle = graphOf(3, {{0, 1}, {1, 2}, {2, 0}}, true);
     const Graph directedTarget = graphOf(4, {{0, 1}, {1, 0}, {1, 2}, {2, 3}, {3, 1}}, true);
 
-    cases.push_back({"arc-in-directed", arc, directedTarget, Semantics::MONOMORPHISM, {}, {}});
     cases.push_back(
-        {"two-cycle-in-directed", twoCycle, directedTarget, Semantics::MONOMORPHISM, {}, {}});
-    cases.push_back(
-        {"directed-triangle", directedTriangle, directedTarget, Semantics::MONOMORPHISM, {}, {}});
+        {"arc-in-directed", arc, directedTarget, Semantics::MONOMORPHISM, {}, {}, {}, {}});
+    cases.push_back({"two-cycle-in-directed",
+                     twoCycle,
+                     directedTarget,
+                     Semantics::MONOMORPHISM,
+                     {},
+                     {},
+                     {},
+                     {}});
+    cases.push_back({"directed-triangle",
+                     directedTriangle,
+                     directedTarget,
+                     Semantics::MONOMORPHISM,
+                     {},
+                     {},
+                     {},
+                     {}});
     cases.push_back({"directed-triangle-induced",
                      directedTriangle,
                      directedTarget,
                      Semantics::INDUCED,
                      {},
+                     {},
+                     {},
                      {}});
 
     // Labels, including `none` as a wildcard on each side independently.
-    cases.push_back({"labelled-path3-in-k4", path3, k4, Semantics::MONOMORPHISM,
+    cases.push_back({"labelled-path3-in-k4",
+                     path3,
+                     k4,
+                     Semantics::MONOMORPHISM,
                      /* pattern */ {7, 8, 7},
-                     /* target  */ {7, 8, 7, 9}});
+                     /* target  */ {7, 8, 7, 9},
+                     {},
+                     {}});
     cases.push_back({"labelled-wildcard-on-pattern",
                      path3,
                      k4,
                      Semantics::MONOMORPHISM,
                      {none, 8, none},
-                     {7, 8, 7, 9}});
+                     {7, 8, 7, 9},
+                     {},
+                     {}});
     cases.push_back({"labelled-wildcard-on-target",
                      path3,
                      k4,
                      Semantics::MONOMORPHISM,
                      {7, 8, 7},
-                     {none, 8, 7, none}});
-    cases.push_back(
-        {"labelled-no-match", triangle, k4, Semantics::MONOMORPHISM, {1, 1, 1}, {1, 1, 2, 2}});
+                     {none, 8, 7, none},
+                     {},
+                     {}});
+    cases.push_back({"labelled-no-match",
+                     triangle,
+                     k4,
+                     Semantics::MONOMORPHISM,
+                     {1, 1, 1},
+                     {1, 1, 2, 2},
+                     {},
+                     {}});
 
     // Edge labels. The pattern asks for a 1-edge followed by a 2-edge, and the target carries
     // three kinds of edge, so a match has to land on the right *kind* and not merely on an edge of
