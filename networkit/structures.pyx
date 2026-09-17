@@ -1,5 +1,35 @@
 # distutils: language=c++
 
+cdef index noneIndex = _noneIndex
+
+cdef inline void _checkElementBounds(index e, index numberOfElements):
+	if e >= numberOfElements:
+		raise IndexError(
+			'index %d out of range, partition has %d elements'
+			% (e, numberOfElements)
+		)
+
+cdef inline void _checkSubsetBounds(index s, index upperBound):
+	if s >= upperBound:
+		raise IndexError(
+			'index %d out of range, upper subset id bound is %d'
+			% (s, upperBound)
+		)
+
+cdef inline void _requireAssigned(index e, index subset):
+	if subset == noneIndex:
+		raise ValueError(
+			'element %d not assigned to a set'
+			% (e)
+		)
+
+cdef inline void _requireUnassigned(index e, index subset):
+	if subset != noneIndex:
+		raise ValueError(
+			'element %d already assigned to set %d'
+			% (e, subset)
+		)
+
 cdef class Cover:
 	""" 
 	Cover(n=0)
@@ -346,6 +376,7 @@ cdef class Partition:
 		int
 			The index of the set in which `e` is contained.
 		"""
+		_checkElementBounds(e, self.numberOfElements())
 		return self._this.subsetOf(e)
 
 	def __setitem__(self, index e, index s):
@@ -361,6 +392,9 @@ cdef class Partition:
 		s : int
 			Index of the subset
 		"""
+		_checkElementBounds(e, self.numberOfElements())
+		_checkSubsetBounds(s, self.upperBound())
+		_requireUnassigned(e, self.subsetOf(e))
 		self._this.addToSubset(s, e)
 
 	def __copy__(self):
@@ -395,6 +429,7 @@ cdef class Partition:
 		int
 			The index of the set in which `e` is contained.
 		"""
+		_checkElementBounds(e, self.numberOfElements())
 		return self._this.subsetOf(e)
 
 	def extend(self):
@@ -425,6 +460,9 @@ cdef class Partition:
 		e : int
 			The element to add.
 		"""
+		_checkElementBounds(e, self.numberOfElements())
+		_checkSubsetBounds(s, self.upperBound())
+		_requireUnassigned(e, self.subsetOf(e))
 		self._this.addToSubset(s, e)
 
 	def moveToSubset(self, index s, index e):
@@ -440,6 +478,9 @@ cdef class Partition:
 		e : int
 			The element to move.
 		"""
+		_checkElementBounds(e, self.numberOfElements())
+		_checkSubsetBounds(s, self.upperBound())
+		_requireAssigned(e, self.subsetOf(e))
 		self._this.moveToSubset(s, e)
 
 	def toSingleton(self, index e):
@@ -453,6 +494,7 @@ cdef class Partition:
 		e : int
 			The index of the element.
 		"""
+		_checkElementBounds(e, self.numberOfElements())
 		self._this.toSingleton(e)
 
 	def allToSingletons(self):
@@ -481,6 +523,8 @@ cdef class Partition:
 		int
 			Id of newly created set.
 		"""
+		_checkSubsetBounds(s, self.upperBound())
+		_checkSubsetBounds(t, self.upperBound())
 		return self._this.mergeSubsets(s, t)
 
 	def setUpperBound(self, index upper):
@@ -574,6 +618,10 @@ cdef class Partition:
 		bool
 			True if `e1` and `e2` belong to same subset, False otherwise.
 		"""
+		_checkElementBounds(e1, self.numberOfElements())
+		_checkElementBounds(e2, self.numberOfElements())
+		_requireAssigned(e1, self.subsetOf(e1))
+		_requireAssigned(e2, self.subsetOf(e2))
 		return self._this.inSameSubset(e1, e2)
 
 	def subsetSizes(self):
@@ -618,6 +666,7 @@ cdef class Partition:
 		list(int)
 			A list containing the members of `s`.
 		"""
+		_checkSubsetBounds(s, self.upperBound())
 		return self._this.getMembers(s)
 
 	def numberOfElements(self):
@@ -720,9 +769,11 @@ cdef class Partition:
 		if self._this.numberOfElements() != other._this.numberOfElements():
 			return False
 
-		cdef index i = 0
+		if sorted(self._this.subsetSizes()) != sorted(other._this.subsetSizes()):
+			return False
+
 		cdef dict selfToOther = dict()
-		for index in range(self._this.numberOfElements()):
+		for i in range(self._this.numberOfElements()):
 			selfSubset = self[i]
 			if selfSubset in selfToOther:
 				if selfToOther[selfSubset] != other[i]:

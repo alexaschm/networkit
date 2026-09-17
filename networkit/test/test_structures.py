@@ -89,11 +89,87 @@ class TestStructures(unittest.TestCase):
 		p1.addToSubset(0,0)
 		p1.addToSubset(1,1)
 		p2 = nk.Partition(3)
-		p2.addToSubset(0,0)
-		p2.addToSubset(1,1)
+		p2.addToSubset(1,0)
+		p2.addToSubset(0,1)
 		self.assertTrue(p1==p2)
-		p1.extend()
+		p1.addToSubset(0,2)
+		p2.addToSubset(0,2)
 		self.assertFalse(p1==p2)
+
+	def testGetItem(self):
+		p1 = nk.Partition(3)	
+		p1.addToSubset(4,0)
+		p1.addToSubset(0,1)
+		p1.addToSubset(2,87)
+		self.assertEqual(p1.subsetOf(87),2)
+		print(p1.getVector())
+		"""
+		p1.addToSubset(2,5)
+		self.assertEqual(p1.subsetOf(0),4)
+		self.assertEqual(p1.subsetOf(1),0)
+		self.assertEqual(p1.subsetOf(3),0)
+		self.assertEqual(p1.subsetOf(4),0)
+		self.assertEqual(p1.subsetOf(5),0)
+		"""
+
+	def testMoveToSubset(self):
+		p1 = nk.Partition(3)	
+		p1.addToSubset(0,0)
+		p1.moveToSubset(99,1)
+		print(p1.upperBound())
+		print(p1.contains(1))
+		self.assertEqual(p1.subsetOf(0),0)
+		self.assertEqual(p1.subsetOf(1),99)
+		print(p1.getVector())
+		print(nk.__file__)
+		print(nk.structures.__file__)
+
+	def testFailedAssertions(self):
+		p1 = nk.Partition(3)
+		p1.setUpperBound(2)
+
+		p1.addToSubset(0,0)
+
+		# cannot get subset of element that is out of bounds
+		with self.assertRaises(IndexError):
+			p1.subsetOf(3)
+
+		# cannot add or move element that is out of bounds
+		with self.assertRaises(IndexError):
+			p1.addToSubset(0,3)
+		with self.assertRaises(IndexError):
+			p1.moveToSubset(0,3)
+
+		# cannot add or move element to subset with out of bounds id
+		with self.assertRaises(IndexError):
+			p1.addToSubset(99,1)
+		with self.assertRaises(IndexError):
+			p1.moveToSubset(99,1)
+
+		# cannot add element that has already been assigned
+		with self.assertRaises(ValueError):
+			p1.addToSubset(1,0)
+		# cannot move element that has not yet been assigned
+		with self.assertRaises(ValueError):
+			p1.moveToSubset(0,1)
+
+		# cannot make a singleton of element that is out of bounds
+		with self.assertRaises(IndexError):
+			p1.toSingleton(3)
+
+		# cannot merge subsets if one of their ids is out of bounds
+		with self.assertRaises(IndexError):
+			p1.mergeSubsets(0,99)
+
+		# cannot check if two elements belong to the same subset if one of them is out of bounds or unassigned
+		with self.assertRaises(IndexError):
+			p1.inSameSubset(0,3)
+		with self.assertRaises(ValueError):
+			p1.inSameSubset(0,1)
+
+		# cannot get the members of a subset if its id is out of bounds
+		with self.assertRaises(IndexError):
+			p1.getMembers(99)		
 
 if __name__ == "__main__":
 	unittest.main()
