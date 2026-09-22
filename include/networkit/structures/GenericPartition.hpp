@@ -17,6 +17,7 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
+#include <iostream>
 
 #include <networkit/Globals.hpp>
 
@@ -70,6 +71,7 @@ public:
         data.resize(newZ, defaultValue);
         z = newZ;
         omega = 0;
+        maxSubsetId = 0;
     }
 
     /**
@@ -114,6 +116,14 @@ public:
      */
     inline void remove(IndexType e) {
         assert(e < z);
+        if (data[e] == maxSubsetId) {
+            maxSubsetId = 0;
+            for (IndexType f = 0; f < this->z; ++f) {
+                if (data[f] > maxSubsetId) {
+                    maxSubsetId = data[f];
+                }
+            }
+        }
         data[e] = noneIndex;
     }
 
@@ -124,9 +134,14 @@ public:
      * @param e The element to add.
      */
     inline void addToSubset(IndexType s, IndexType e) {
+        //assert(e < z) // there must be space for the new element
         assert(data[e] == noneIndex); // guarantee that element was unassigned
         assert(s <= omega);           // do not create new subset ids
         data[e] = s;
+        if (s > maxSubsetId)
+        {
+            maxSubsetId = s;
+        }  
     }
 
     /**
@@ -138,6 +153,17 @@ public:
     inline void moveToSubset(IndexType s, IndexType e) {
         assert(this->contains(e));
         assert(s <= omega); // do not create new subset ids
+        if (s > maxSubsetId)
+        {
+            maxSubsetId = s;
+        } else if (data[e] == maxSubsetId) {
+            maxSubsetId = -1;
+            for (IndexType f = 0; f < this->z; ++f) {
+                if (data[f] > maxSubsetId) {
+                    maxSubsetId = data[f];
+                }
+            }
+        }
         data[e] = s;
     }
 
@@ -146,7 +172,10 @@ public:
      *
      * @param e The index of the element.
      */
-    inline void toSingleton(IndexType e) { data[e] = newSubsetId(); }
+    inline void toSingleton(IndexType e) {
+        data[e] = newSubsetId();
+        maxSubsetId = omega;
+    }
 
     /**
      * Assigns every element to a singleton set.
@@ -172,9 +201,14 @@ public:
     /**
      * Sets an upper bound for the subset ids that CAN be assigned.
      *
-     * @param[in] upper highest assigned subset ID + 1
+     * @param[in] upper highest assignable subset ID + 1
      */
-    inline void setUpperBound(IndexType upper) { this->omega = upper - 1; }
+    inline void setUpperBound(IndexType upper) {
+        std::cout << "Max used subset id is " << maxSubsetId << std::endl;
+        std::cout << "Want to set omega to  " << upper-1 << std::endl;
+        assert(maxSubsetId <= upper - 1);
+        this->omega = upper - 1;
+    }
 
     /**
      * Return an upper bound for the subset ids that have been assigned.
@@ -313,6 +347,7 @@ public:
 private:
     IndexType z;     //!< maximum element index that can be mapped
     IndexType omega; //!< maximum subset index ever assigned
+    IndexType maxSubsetId; // maximum non-empty subset id
     std::vector<IndexType>
         data; //!< data container, indexed by element index, containing subset index
     std::string name;

@@ -9,25 +9,27 @@
 namespace NetworKit {
 
 template <IntegralValue IndexType>
-GenericPartition<IndexType>::GenericPartition() : z(0), omega(0), data(0) {}
+GenericPartition<IndexType>::GenericPartition() : z(0), omega(0), maxSubsetId(0), data(0) {}
 
 template <IntegralValue IndexType>
 GenericPartition<IndexType>::GenericPartition(const std::vector<IndexType> &data)
-    : z(data.size()), omega(), data(data) {
+    : z(data.size()), omega(), maxSubsetId(), data(data) {
     auto max_elem = *std::max_element(data.begin(), data.end());
     this->omega = (max_elem == noneIndex) ? 0 : max_elem;
+    this->maxSubsetId = this->omega;
 }
 
 template <IntegralValue IndexType>
-GenericPartition<IndexType>::GenericPartition(IndexType z) : z(z), omega(0), data(z, noneIndex) {}
+GenericPartition<IndexType>::GenericPartition(IndexType z) : z(z), omega(0), maxSubsetId(0), data(z, noneIndex) {}
 
 template <IntegralValue IndexType>
 GenericPartition<IndexType>::GenericPartition(IndexType z, IndexType defaultValue)
-    : z(z), omega(0), data(z, defaultValue) {}
+    : z(z), omega(0), maxSubsetId(0), data(z, defaultValue) {}
 
 template <IntegralValue IndexType>
 void GenericPartition<IndexType>::allToSingletons() {
     setUpperBound(numberOfElements());
+    maxSubsetId = this->omega;
     parallelForEntries([&](IndexType e, IndexType) { data[e] = e; });
 }
 
@@ -37,6 +39,7 @@ IndexType GenericPartition<IndexType>::mergeSubsets(IndexType s, IndexType t) {
     assert(t <= omega);
     if (s != t) {
         IndexType m = newSubsetId(); // new id for merged set
+        maxSubsetId = omega;
         for (IndexType e = 0; e < this->z; ++e) {
             if (data[e] == s || data[e] == t) {
                 data[e] = m;
@@ -99,6 +102,7 @@ void GenericPartition<IndexType>::compact(bool useTurbo) {
                 }
             });
     }
+    maxSubsetId = i-1;
     this->setUpperBound(i);
 }
 
@@ -163,6 +167,7 @@ std::set<std::set<IndexType>> GenericPartition<IndexType>::getSubsets() const {
 template <IntegralValue IndexType>
 void GenericPartition<IndexType>::allToOnePartition() {
     omega = 0;
+    maxSubsetId = 0;
     this->parallelForEntries([&](IndexType e, IndexType) { this->data[e] = 0; });
 }
 
