@@ -124,7 +124,7 @@ class TestStructures(unittest.TestCase):
 		print(nk.__file__)
 		print(nk.structures.__file__)
 
-	def testFailedAssertions(self):
+	def testFailedAssertionsParition(self):
 		p1 = nk.Partition(3)
 		p1.setUpperBound(2)
 
@@ -169,7 +169,56 @@ class TestStructures(unittest.TestCase):
 
 		# cannot get the members of a subset if its id is out of bounds
 		with self.assertRaises(IndexError):
-			p1.getMembers(99)		
+			p1.getMembers(99)
+
+	def testFailedAssertionsCover(self):
+		c1 = nk.Cover(3)
+		c1.setUpperBound(2)
+
+		c1.addToSubset(0,0)
+
+		# cannot get subset of element that is out of bounds
+		with self.assertRaises(IndexError):
+			c1.subsetsOf(3)
+
+		# cannot add, move or remove element that is out of bounds
+		with self.assertRaises(IndexError):
+			c1.addToSubset(0,3)
+		with self.assertRaises(IndexError):
+			c1.moveToSubset(0,3)
+		with self.assertRaises(IndexError):
+			c1.removeFromSubset(0,3)
+
+		# cannot add, move or remove element to subset with out of bounds id
+		with self.assertRaises(IndexError):
+			c1.addToSubset(99,1)
+		with self.assertRaises(IndexError):
+			c1.moveToSubset(99,1)
+		with self.assertRaises(IndexError):
+			c1.removeFromSubset(99, 1)
+
+		# cannot make a singleton of element that is out of bounds
+		with self.assertRaises(IndexError):
+			c1.toSingleton(3)
+
+		# cannot merge subsets if one of their ids is out of bounds
+		with self.assertRaises(IndexError):
+			c1.mergeSubsets(0,99)
+
+		# cannot check if two elements belong to the same subset if one of them is out of bounds or unassigned
+		with self.assertRaises(IndexError):
+			c1.inSameSubset(0,3)
+		with self.assertRaises(ValueError):
+			c1.inSameSubset(0,1)
+
+		# cannot get the members of a subset if its id is out of bounds
+		with self.assertRaises(IndexError):
+			c1.getMembers(99)
+
+	def testPartition(self):
+		p1 = nk.Partition(0)
+		print(p1.upperBound())
+
 
 if __name__ == "__main__":
 	unittest.main()

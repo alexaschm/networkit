@@ -67,6 +67,7 @@ cdef class Cover:
 		list(int)
 			A set of subset ids in which `e` is contained.
 		"""
+		_checkElementBounds(e, self.numberOfElements())
 		return self._this.subsetsOf(e)
 
 	def extend(self):
@@ -95,6 +96,8 @@ cdef class Cover:
 		e : int
 			The element to be added.
 		"""
+		_checkElementBounds(e, self.numberOfElements())
+		_checkSubsetBounds(s, self.upperBound())
 		self._this.addToSubset(s, e)
 
 	def removeFromSubset(self, s, e):
@@ -110,6 +113,8 @@ cdef class Cover:
 		e : int
 			The element to be removed.
 		"""
+		_checkElementBounds(e, self.numberOfElements())
+		_checkSubsetBounds(s, self.upperBound())
 		self._this.removeFromSubset(s, e)
 
 	def moveToSubset(self, index s, index e):
@@ -125,6 +130,8 @@ cdef class Cover:
 		e : int
 			The element to be moved.
 		"""
+		_checkElementBounds(e, self.numberOfElements())
+		_checkSubsetBounds(s, self.upperBound())
 		self._this.moveToSubset(s, e)
 
 	def toSingleton(self, index e):
@@ -143,6 +150,7 @@ cdef class Cover:
 		int
 			The id of the new set.
 		"""
+		_checkElementBounds(e, self.numberOfElements())
 		self._this.toSingleton(e)
 
 	def allToSingletons(self):
@@ -166,6 +174,8 @@ cdef class Cover:
 		t : int
 			The second subset.
 		"""
+		_checkSubsetBounds(s, self.upperBound())
+		_checkSubsetBounds(t, self.upperBound())
 		self._this.mergeSubsets(s, t)
 
 	def setUpperBound(self, index upper):
@@ -244,6 +254,10 @@ cdef class Cover:
 		bool
 			True if `e1` and `e2` belong to the same subset; False otherwise.
 		"""
+		_checkElementBounds(e1, self.numberOfElements())
+		_checkElementBounds(e2, self.numberOfElements())
+		if not self.subsetsOf(e1): raise ValueError('element %d not assigned to a set' % (e1))
+		if not self.subsetsOf(e2): raise ValueError('element %d not assigned to a set' % (e2))
 		return self._this.inSameSubset(e1, e2)
 
 	def subsetSizes(self):
@@ -287,6 +301,7 @@ cdef class Cover:
 		list(int)
 			The list of members of subset `s`.
 		"""
+		_checkSubsetBounds(s, self.upperBound())
 		return self._this.getMembers(s)
 
 	def numberOfElements(self):
@@ -469,7 +484,7 @@ cdef class Partition:
 		"""  
 		moveToSubset(s, e)	
 
-		Move the (previously assigned) element `e` to the set `s.
+		Move the (previously assigned) element `e` to the set `s`.
 
 		Parameters
 		----------
