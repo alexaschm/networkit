@@ -80,15 +80,17 @@ class TestStructures(unittest.TestCase):
 	def testPartitionSingletons(self):
 		pa = nk.Partition(3)	
 		pa.allToSingletons()
-		pa.addToSubset(1,0)
+		pa.moveToSubset(1,0)
 		pa.toSingleton(1)
 		self.assertEqual(pa.numberOfElements(), pa.numberOfSubsets())
 
 	def testPartitionEquality(self):
-		p1 = nk.Partition(3)	
+		p1 = nk.Partition(3)
+		p1.setUpperBound(2)	
 		p1.addToSubset(0,0)
 		p1.addToSubset(1,1)
 		p2 = nk.Partition(3)
+		p2.setUpperBound(2)
 		p2.addToSubset(1,0)
 		p2.addToSubset(0,1)
 		self.assertTrue(p1==p2)
@@ -97,11 +99,12 @@ class TestStructures(unittest.TestCase):
 		self.assertFalse(p1==p2)
 
 	def testGetItem(self):
-		p1 = nk.Partition(3)	
+		p1 = nk.Partition(3)
+		p1.setUpperBound(5)	
 		p1.addToSubset(4,0)
 		p1.addToSubset(0,1)
-		p1.addToSubset(2,87)
-		self.assertEqual(p1.subsetOf(87),2)
+		p1.addToSubset(2,2)
+		self.assertEqual(p1.subsetOf(2),2)
 		print(p1.getVector())
 		"""
 		p1.addToSubset(2,5)
@@ -113,13 +116,15 @@ class TestStructures(unittest.TestCase):
 		"""
 
 	def testMoveToSubset(self):
-		p1 = nk.Partition(3)	
+		p1 = nk.Partition(3)
+		p1.setUpperBound(2)	
 		p1.addToSubset(0,0)
-		p1.moveToSubset(99,1)
+		p1.addToSubset(0,1)
+		p1.moveToSubset(1,1)
 		print(p1.upperBound())
 		print(p1.contains(1))
 		self.assertEqual(p1.subsetOf(0),0)
-		self.assertEqual(p1.subsetOf(1),99)
+		self.assertEqual(p1.subsetOf(1),1)
 		print(p1.getVector())
 		print(nk.__file__)
 		print(nk.structures.__file__)

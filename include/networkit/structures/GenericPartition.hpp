@@ -10,6 +10,7 @@
 
 #include <cassert>
 #include <concepts>
+#include <iostream>
 #include <limits>
 #include <map>
 #include <set>
@@ -17,7 +18,6 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
-#include <iostream>
 
 #include <networkit/Globals.hpp>
 
@@ -60,8 +60,10 @@ public:
 
     GenericPartition(const std::vector<IndexType> &data);
 
-    /* Updates the maximum index of the partition to @a newZ and sets all its
-     * values to @a defaultValue.
+    /**
+     * Updates the maximum index of the partition to @a newZ and sets all its values to @a
+     * defaultValue. WARNING: If @a defaultValue is neither @a noneIndex nor 0, the object may
+     * be left in an inconsistent state.
      *
      * @param[in] newZ New maximum index of the partition. @param[in]
      * defaultValue Default value of all the elements in the partition.
@@ -71,7 +73,11 @@ public:
         data.resize(newZ, defaultValue);
         z = newZ;
         omega = 0;
-        maxSubsetId = 0;
+        if (z == 0) {
+            maxSubsetId = noneIndex;
+        } else {
+            maxSubsetId = defaultValue;
+        }
     }
 
     /**
@@ -116,15 +122,13 @@ public:
      */
     inline void remove(IndexType e) {
         assert(e < z);
-        if (data[e] == maxSubsetId) {
-            maxSubsetId = 0;
-            for (IndexType f = 0; f < this->z; ++f) {
-                if (data[f] > maxSubsetId) {
-                    maxSubsetId = data[f];
-                }
+        data[e] = noneIndex;
+        maxSubsetId = noneIndex;
+        for (IndexType f = 0; f < this->z; ++f) {
+            if (data[f] != noneIndex && (maxSubsetId == noneIndex || data[f] > maxSubsetId)) {
+                maxSubsetId = data[f];
             }
         }
-        data[e] = noneIndex;
     }
 
     /**
@@ -134,14 +138,13 @@ public:
      * @param e The element to add.
      */
     inline void addToSubset(IndexType s, IndexType e) {
-        //assert(e < z) // there must be space for the new element
+        // assert(e < z) // there must be space for the new element
         assert(data[e] == noneIndex); // guarantee that element was unassigned
         assert(s <= omega);           // do not create new subset ids
         data[e] = s;
-        if (s > maxSubsetId)
-        {
+        if (maxSubsetId == noneIndex || s > maxSubsetId) {
             maxSubsetId = s;
-        }  
+        }
     }
 
     /**
@@ -152,19 +155,21 @@ public:
      */
     inline void moveToSubset(IndexType s, IndexType e) {
         assert(this->contains(e));
-        assert(s <= omega); // do not create new subset ids
-        if (s > maxSubsetId)
-        {
+        assert(s <= omega);
+
+        const IndexType oldSubset = data[e];
+        data[e] = s;
+
+        if (maxSubsetId == noneIndex || s > maxSubsetId) {
             maxSubsetId = s;
-        } else if (data[e] == maxSubsetId) {
-            maxSubsetId = -1;
+        } else if (maxSubsetId == oldSubset) {
+            maxSubsetId = noneIndex;
             for (IndexType f = 0; f < this->z; ++f) {
-                if (data[f] > maxSubsetId) {
+                if (data[f] != noneIndex && (maxSubsetId == noneIndex || data[f] > maxSubsetId)) {
                     maxSubsetId = data[f];
                 }
             }
         }
-        data[e] = s;
     }
 
     /**
@@ -205,8 +210,9 @@ public:
      */
     inline void setUpperBound(IndexType upper) {
         std::cout << "Max used subset id is " << maxSubsetId << std::endl;
-        std::cout << "Want to set omega to  " << upper-1 << std::endl;
-        assert(maxSubsetId <= upper - 1);
+        std::cout << "Want to set omega to  " << upper - 1 << std::endl;
+        assert(upper > 0);
+        assert(maxSubsetId == noneIndex || maxSubsetId < upper);
         this->omega = upper - 1;
     }
 
@@ -345,8 +351,8 @@ public:
     void parallelForEntries(Callback handle) const;
 
 private:
-    IndexType z;     //!< maximum element index that can be mapped
-    IndexType omega; //!< maximum subset index ever assigned
+    IndexType z;           //!< maximum element index that can be mapped
+    IndexType omega;       //!< maximum subset index ever assigned
     IndexType maxSubsetId; // maximum non-empty subset id
     std::vector<IndexType>
         data; //!< data container, indexed by element index, containing subset index
