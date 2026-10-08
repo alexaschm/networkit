@@ -9,52 +9,42 @@
 namespace NetworKit {
 
 template <IntegralValue IndexType>
-GenericPartition<IndexType>::GenericPartition() : z(0), omega(0), maxSubsetId(noneIndex), data(0) {}
+GenericPartition<IndexType>::GenericPartition() : z(0), omega(0), data(0) {}
 
 template <IntegralValue IndexType>
 GenericPartition<IndexType>::GenericPartition(const std::vector<IndexType> &data)
-    : z(data.size()), omega(), maxSubsetId(), data(data) {
-    bool found = false;
-
-    for (auto s : data) {
-        if (s != noneIndex && (!found || s > maxSubsetId)) {
-            maxSubsetId = s;
-            found = true;
+    : z(data.size()), omega(), data(data) {
+    // @Mikhail I changed this bc before if the data vector contained numbers (other than 0) and
+    // 'none' entries, this always set omega to 0. Omega is the maximum subset index assigned so if
+    // for example data = [5, 3, none, 4, none], it should be 5 not 0
+    auto max_elem = noneIndex;
+    for (auto elem : data) {
+        if (elem != noneIndex && (max_elem == noneIndex || elem > max_elem)) {
+            max_elem = elem;
         }
     }
-
-    if (!found) {
-        maxSubsetId = noneIndex;
-        omega = 0;
-    } else {
-        omega = maxSubsetId;
-    }
+    this->omega = (max_elem == noneIndex) ? 0 : max_elem;
 }
 
 template <IntegralValue IndexType>
-GenericPartition<IndexType>::GenericPartition(IndexType z)
-    : z(z), omega(0), maxSubsetId(noneIndex), data(z, noneIndex) {}
+GenericPartition<IndexType>::GenericPartition(IndexType z) : z(z), omega(0), data(z, noneIndex) {}
 
 template <IntegralValue IndexType>
 GenericPartition<IndexType>::GenericPartition(IndexType z, IndexType defaultValue)
-    : z(z), omega(0), maxSubsetId(z == 0 ? noneIndex : defaultValue), data(z, defaultValue) {}
+    : z(z), omega(0), data(z, defaultValue) {}
 
 template <IntegralValue IndexType>
 void GenericPartition<IndexType>::allToSingletons() {
-    if (z != 0) {
-        this->setUpperBound(numberOfElements());
-        this->maxSubsetId = this->omega;
-        this->parallelForEntries([&](IndexType e, IndexType) { data[e] = e; });
-    }
+    setUpperBound(numberOfElements());
+    parallelForEntries([&](IndexType e, IndexType) { data[e] = e; });
 }
 
 template <IntegralValue IndexType>
 IndexType GenericPartition<IndexType>::mergeSubsets(IndexType s, IndexType t) {
     assert(s <= omega);
     assert(t <= omega);
-    if (s != t && !this->getMembers(s).empty() && !this->getMembers(t).empty()) {
+    if (s != t) {
         IndexType m = newSubsetId(); // new id for merged set
-        this->maxSubsetId = this->omega;
         for (IndexType e = 0; e < this->z; ++e) {
             if (data[e] == s || data[e] == t) {
                 data[e] = m;
@@ -87,10 +77,6 @@ count GenericPartition<IndexType>::numberOfSubsets() const {
 
 template <IntegralValue IndexType>
 void GenericPartition<IndexType>::compact(bool useTurbo) {
-    if (this->maxSubsetId == noneIndex) {
-        this->omega = 0;
-        return;
-    }
     IndexType i = 0;
     if (!useTurbo) {
         std::vector<IndexType> usedIds(data);
@@ -121,7 +107,6 @@ void GenericPartition<IndexType>::compact(bool useTurbo) {
                 }
             });
     }
-    this->maxSubsetId = i - 1;
     this->setUpperBound(i);
 }
 
@@ -185,8 +170,7 @@ std::set<std::set<IndexType>> GenericPartition<IndexType>::getSubsets() const {
 
 template <IntegralValue IndexType>
 void GenericPartition<IndexType>::allToOnePartition() {
-    this->omega = 0;
-    this->maxSubsetId = (this->z == 0) ? noneIndex : 0;
+    omega = 0;
     this->parallelForEntries([&](IndexType e, IndexType) { this->data[e] = 0; });
 }
 

@@ -13,6 +13,7 @@
 #include <vector>
 
 #include <networkit/Globals.hpp>
+#include <networkit/auxiliary/Log.hpp>
 #include <networkit/structures/GenericPartition.hpp>
 
 namespace NetworKit {

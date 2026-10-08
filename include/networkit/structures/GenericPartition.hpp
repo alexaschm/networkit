@@ -10,7 +10,6 @@
 
 #include <cassert>
 #include <concepts>
-#include <iostream>
 #include <limits>
 #include <map>
 #include <set>
@@ -20,6 +19,7 @@
 #include <vector>
 
 #include <networkit/Globals.hpp>
+#include <networkit/auxiliary/Log.hpp>
 
 namespace NetworKit {
 
@@ -50,8 +50,8 @@ public:
     /**
      * Create a new partition data structure for @a z elements. Initialize each
      * entry to the default value. WARNING: this circumvents the standard
-     * interface and may leave the object in an inconsistent state. Use only in
-     * exceptional cases.
+     * interface and leaves the object in an inconsistent state if @a defaultValue is neither none
+     * nor 0. Use only in exceptional cases.
      *
      * @param[in] z maximum ValueType
      * @param[in] defaultValue
@@ -61,9 +61,9 @@ public:
     GenericPartition(const std::vector<IndexType> &data);
 
     /**
-     * Updates the maximum index of the partition to @a newZ and sets all its values to @a
-     * defaultValue. WARNING: If @a defaultValue is neither @a noneIndex nor 0, the object may
-     * be left in an inconsistent state.
+     * Updates the maximum index of the partition to @a newZ and sets all its
+     * values to @a defaultValue. WARNING: this leaves the object in an inconsistent state if @a
+     * defaultValue is neither none nor 0. Use only in exceptional cases.
      *
      * @param[in] newZ New maximum index of the partition. @param[in]
      * defaultValue Default value of all the elements in the partition.
@@ -73,11 +73,6 @@ public:
         data.resize(newZ, defaultValue);
         z = newZ;
         omega = 0;
-        if (z == 0) {
-            maxSubsetId = noneIndex;
-        } else {
-            maxSubsetId = defaultValue;
-        }
     }
 
     /**
@@ -123,12 +118,6 @@ public:
     inline void remove(IndexType e) {
         assert(e < z);
         data[e] = noneIndex;
-        maxSubsetId = noneIndex;
-        for (IndexType f = 0; f < this->z; ++f) {
-            if (data[f] != noneIndex && (maxSubsetId == noneIndex || data[f] > maxSubsetId)) {
-                maxSubsetId = data[f];
-            }
-        }
     }
 
     /**
@@ -138,13 +127,9 @@ public:
      * @param e The element to add.
      */
     inline void addToSubset(IndexType s, IndexType e) {
-        // assert(e < z) // there must be space for the new element
         assert(data[e] == noneIndex); // guarantee that element was unassigned
         assert(s <= omega);           // do not create new subset ids
         data[e] = s;
-        if (maxSubsetId == noneIndex || s > maxSubsetId) {
-            maxSubsetId = s;
-        }
     }
 
     /**
@@ -155,21 +140,8 @@ public:
      */
     inline void moveToSubset(IndexType s, IndexType e) {
         assert(this->contains(e));
-        assert(s <= omega);
-
-        const IndexType oldSubset = data[e];
+        assert(s <= omega); // do not create new subset ids
         data[e] = s;
-
-        if (maxSubsetId == noneIndex || s > maxSubsetId) {
-            maxSubsetId = s;
-        } else if (maxSubsetId == oldSubset) {
-            maxSubsetId = noneIndex;
-            for (IndexType f = 0; f < this->z; ++f) {
-                if (data[f] != noneIndex && (maxSubsetId == noneIndex || data[f] > maxSubsetId)) {
-                    maxSubsetId = data[f];
-                }
-            }
-        }
     }
 
     /**
@@ -177,10 +149,7 @@ public:
      *
      * @param e The index of the element.
      */
-    inline void toSingleton(IndexType e) {
-        data[e] = newSubsetId();
-        maxSubsetId = omega;
-    }
+    inline void toSingleton(IndexType e) { data[e] = newSubsetId(); }
 
     /**
      * Assigns every element to a singleton set.
@@ -206,13 +175,26 @@ public:
     /**
      * Sets an upper bound for the subset ids that CAN be assigned.
      *
-     * @param[in] upper highest assignable subset ID + 1
+     * @param[in] upper highest assigned subset ID + 1
      */
     inline void setUpperBound(IndexType upper) {
-        std::cout << "Max used subset id is " << maxSubsetId << std::endl;
-        std::cout << "Want to set omega to  " << upper - 1 << std::endl;
         assert(upper > 0);
-        assert(maxSubsetId == noneIndex || maxSubsetId < upper);
+        if (upper - 1 < this->omega) {
+            // trying to shrink omega, must ensure we do not shrink it too much
+            for (IndexType e = 0; e < this->z; ++e) {
+                if (data[e] != noneIndex && data[e] > upper - 1) {
+                    // @Mikhail Wasn't sure what type of error to throw here and how to word the
+                    // error message
+                    ERROR("Shrinking upper bound this much would result in elements being mapped "
+                          "to invalid subset ids. Try larger number for upper or using compact() "
+                          "first.");
+                    throw std::invalid_argument(
+                        "Shrinking upper bound this much would result in "
+                        "elements being mapped to invalid subset ids. Try "
+                        "larger number for upper or using compact() first.");
+                }
+            }
+        }
         this->omega = upper - 1;
     }
 
@@ -351,9 +333,8 @@ public:
     void parallelForEntries(Callback handle) const;
 
 private:
-    IndexType z;           //!< maximum element index that can be mapped
-    IndexType omega;       //!< maximum subset index ever assigned
-    IndexType maxSubsetId; // maximum non-empty subset id
+    IndexType z;     //!< maximum element index that can be mapped
+    IndexType omega; //!< maximum subset index ever assigned
     std::vector<IndexType>
         data; //!< data container, indexed by element index, containing subset index
     std::string name;

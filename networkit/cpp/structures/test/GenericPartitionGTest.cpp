@@ -244,13 +244,23 @@ TYPED_TEST_P(GenericPartitionGTest, testRemoveAndResetUseTypedNoneSentinel) {
     EXPECT_THAT(partition.getVector(), ElementsAre(none, none));
 }
 
+TYPED_TEST_P(GenericPartitionGTest, testSetUpperBound) {
+    constexpr auto none = GenericPartition<TypeParam>::noneIndex;
+
+    const std::vector<TypeParam> vector{0, 1, 2, 3, 4, 5};
+    GenericPartition<TypeParam> partition(vector);
+    EXPECT_ANY_THROW(partition.setUpperBound(TypeParam{5}));
+    partition.setUpperBound(TypeParam{42});
+    partition.setUpperBound(TypeParam{6});
+}
+
 REGISTER_TYPED_TEST_SUITE_P(GenericPartitionGTest, testSizeConstructorCreatesUnassignedElements,
                             testSizeAndDefaultValueConstructorInitializesElements,
                             testVectorConstructorInitializesFromVector,
                             testSingletonsUseTemplateIndexType, testMoveMergeAndMembers,
                             testCompactRenumbersSparseSubsetIds,
                             testRemoveAndResetUseTypedNoneSentinel, testAddToSubset,
-                            testNumberOfSubsetsAfterSingletons,
+                            testSetUpperBound, testNumberOfSubsetsAfterSingletons,
                             testNumberOfSubsetsAfterMovingAndMerging, testBoundsAfterSingletons,
                             testContainsAssignedElementsOnly, testMergedPartitionStructure,
                             testCompactPreservesMergedPartitionStructure);

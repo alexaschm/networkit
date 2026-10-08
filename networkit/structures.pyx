@@ -83,6 +83,8 @@ cdef class Cover:
 		"""
 		return self._this.extend()
 
+	# @Mikhail this does not fail if e is already assigned, afterwards e is in all of its previously assigned subsets + in the new subset s, comment potentially misleading
+	# For Partition addToSubset(s, e) fails if e is already assigned, maybe the comment was simply copy pasted
 	def addToSubset(self, s, e):
 		"""
 		addToSubset(s, e)
@@ -784,16 +786,24 @@ cdef class Partition:
 		if self._this.numberOfElements() != other._this.numberOfElements():
 			return False
 
-		if sorted(self._this.subsetSizes()) != sorted(other._this.subsetSizes()):
-			return False
-
+		# Build a bijection between subset ids (independent of the concrete ids).
+		# Unassigned elements (labeled none) are absent from every subset: they
+		# must be unassigned on both sides and do not take part in the id mapping.
 		cdef dict selfToOther = dict()
-		for i in range(self._this.numberOfElements()):
-			selfSubset = self[i]
-			if selfSubset in selfToOther:
-				if selfToOther[selfSubset] != other[i]:
-					return False
-			else:
-				selfToOther[selfSubset] = other[i]
+		cdef dict otherToSelf = dict()
+		cdef index idx
+		for idx in range(self._this.numberOfElements()):
+			if self._this.contains(idx) != other._this.contains(idx):
+				return False
+			if not self._this.contains(idx):
+				continue
+			s = self[idx]
+			o = other[idx]
+			if s in selfToOther and selfToOther[s] != o:
+				return False
+			if o in otherToSelf and otherToSelf[o] != s:
+				return False
+			selfToOther[s] = o
+			otherToSelf[o] = s
 		return True
 

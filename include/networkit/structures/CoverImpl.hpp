@@ -199,6 +199,21 @@ IndexType GenericCover<IndexType>::extend() {
 
 template <IntegralValue IndexType>
 void GenericCover<IndexType>::setUpperBound(IndexType upper) {
+    assert(upper > 0);
+    if (upper - 1 < this->omega) {
+        // trying to shrink omega, must ensure we do not shrink it too much
+        for (IndexType e = 0; e <= this->z; ++e) {
+            if (!data[e].empty()
+                && std::any_of(data[e].begin(), data[e].end(),
+                               [upper](IndexType x) { return x > upper - 1; })) {
+                ERROR("Shrinking upper bound this much would result in elements being mapped to "
+                      "invalid subset ids. Try larger number for upper or using compact() first.");
+                throw std::invalid_argument(
+                    "Shrinking upper bound this much would result in elements being mapped to "
+                    "invalid subset ids. Try larger number for upper or using compact() first.");
+            }
+        }
+    }
     this->omega = upper - 1;
 }
 
