@@ -206,6 +206,8 @@ void GenericCover<IndexType>::setUpperBound(IndexType upper) {
             if (!data[e].empty()
                 && std::any_of(data[e].begin(), data[e].end(),
                                [upper](IndexType x) { return x > upper - 1; })) {
+                // @Mikhail Wasn't sure what type of error to throw here and how to word the error
+                // message
                 ERROR("Shrinking upper bound this much would result in elements being mapped to "
                       "invalid subset ids. Try larger number for upper or using compact() first.");
                 throw std::invalid_argument(
